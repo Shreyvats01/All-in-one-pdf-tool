@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="320dp"
+    android:height="180dp"
+    android:viewportWidth="320"
+    android:viewportHeight="180">
+    <!-- Subtle editorial workspace canvas -->
+    <path
+        android:fillColor="#E8E5DE"
+        android:pathData="M16,20h288c8.8,0 16,7.2 16,16v108c0,8.8 -7.2,16 -16,16H16c-8.8,0 -16,-7.2 -16,-16V36c0,-8.8 7.2,-16 16,-16z" />
+    <!-- Architectural grid lines -->
+    <path
+        android:strokeColor="#D6D3C9"
+        android:strokeWidth="1"
+        android:pathData="M60,20v140M120,20v140M180,20v140M240,20v140M0,65h320M0,115h320" />
+    <!-- Back paper folio -->
+    <path
+        android:fillColor="#E0E4FF"
+        android:pathData="M96,34h92l22,22v88c0,4.4 -3.6,8 -8,8H96c-4.4,0 -8,-3.6 -8,-8V42c0,-4.4 3.6,-8 8,-8z" />
+    <!-- Front paper folio -->
+    <path
+        android:fillColor="#FAF8F5"
+        android:pathData="M82,42h92l22,22v84c0,4.4 -3.6,8 -8,8H82c-4.4,0 -8,-3.6 -8,-8V50c0,-4.4 3.6,-8 8,-8z" />
+    <path
+        android:fillColor="#C7CEFF"
+        android:pathData="M174,42v22h22z" />
+    <!-- Editorial typography bars -->
+    <path
+        android:fillColor="#4F5BD5"
+        android:pathData="M98,64h44v6H98z" />
+    <path
+        android:fillColor="#18181B"
+        android:pathData="M98,80h74v4H98zM98,92h68v4H98zM98,104h76v4H98zM98,116h52v4H98z" />
+    <!-- Accent badge -->
+    <path
+        android:fillColor="#4F5BD5"
+        android:pathData="M214,96m-24,0a24,24 0,1 1,48 0a24,24 0,1 1,-48 0" />
+    <path
+        android:fillColor="#FAF8F5"
+        android:pathData="M206,96l6,6l12,-12l-2.8,-2.8l-9.2,9.2l-3.2,-3.2z" />
+</vector>

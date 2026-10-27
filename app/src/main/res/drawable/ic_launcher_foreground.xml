@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Back folio sheet -->
+    <path
+        android:fillColor="#C7CEFF"
+        android:pathData="M36,26h30l12,12v38c0,3.3 -2.7,6 -6,6H36c-3.3,0 -6,-2.7 -6,-6V32c0,-3.3 2.7,-6 6,-6z" />
+    <!-- Front folio sheet -->
+    <path
+        android:fillColor="#FAF8F5"
+        android:pathData="M32,30h30l12,12v36c0,3.3 -2.7,6 -6,6H32c-3.3,0 -6,-2.7 -6,-6V36c0,-3.3 2.7,-6 6,-6z" />
+    <!-- Folded corner -->
+    <path
+        android:fillColor="#E0E4FF"
+        android:pathData="M62,30v12h12z" />
+    <!-- Minimalist F / editorial lines in muted indigo -->
+    <path
+        android:fillColor="#343D9B"
+        android:pathData="M36,46h22v5H42v7h13v5H42v11h-6V46z" />
+</vector>

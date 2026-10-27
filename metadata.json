@@ -1,0 +1,10 @@
+{
+  "name": "Folio",
+  "description": "100% offline universal document reader and complete non-destructive PDF toolkit for Android.",
+  "requestFramePermissions": [
+    "camera"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

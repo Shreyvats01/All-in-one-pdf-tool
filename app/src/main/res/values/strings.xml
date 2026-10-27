@@ -1,0 +1,17 @@
+<resources>
+    <string name="app_name">Folio</string>
+    <string name="tagline_offline_workspace">100% Offline Document Reader &amp; PDF Studio</string>
+    <string name="nav_home">Home</string>
+    <string name="nav_tools">Tools</string>
+    <string name="nav_files">Files</string>
+    <string name="nav_settings">Settings</string>
+    <string name="continue_reading">Continue reading</string>
+    <string name="quick_actions">Quick actions</string>
+    <string name="recent_files">Recent files</string>
+    <string name="favourites">Favourites</string>
+    <string name="private_vault">Private Vault</string>
+    <string name="trash_bin">Trash (30-day auto-clear)</string>
+    <string name="error_password_protected">This PDF is password-protected. Enter the password to continue.</string>
+    <string name="error_corrupted_pdf">This PDF appears damaged. Run the Repair PDF tool to rebuild its structure.</string>
+    <string name="fidelity_notice_office">Best-effort offline conversion preserving text, tables, and structure. Complex styling fidelity may vary.</string>
+</resources>
