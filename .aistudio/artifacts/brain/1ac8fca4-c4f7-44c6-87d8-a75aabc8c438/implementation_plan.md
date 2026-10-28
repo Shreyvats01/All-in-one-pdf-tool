@@ -1,137 +1,139 @@
-# Folio — Premium Editorial UI/UX Overhaul & Design System Upgrade
+# Folio — Automated GitHub CI/CD & Android Release Pipeline
 
-This plan transforms **Folio** from a functional Material 3 utility into a flagship editorial document workspace—resolving every layout overload, design mismatch, and visual gap identified in the Design Audit while updating `DESIGN_AUDIT.md` with the structured screen-by-screen blueprint for **Home**, **Tools**, **Files**, **Reader**, and **Settings**.
+An automated, zero-touch GitHub Actions release pipeline and continuous integration suite that validates Folio's 100% offline guarantee, runs unit/Robolectric and Android Lint checks, builds signed release APK and AAB artifacts with dynamic version codes, generates SHA-256 integrity checksums and structured release notes, and publishes everything directly to GitHub Releases.
 
 ## User Review & Critical Decisions
 
 > [!IMPORTANT]
-> Your confirmed aesthetic, typographic, and layout choices below govern this redesign.
+> The following architectural and release pipeline decisions reflect your confirmed selections and respect all AI Studio Android signing constraints.
 
-- **Confirmed Decision 1 — Premium Color Palette**: **Warm Alabaster Paper (`#FAF8F4`), Deep Obsidian Ink (`#141518`), and Muted Royal Indigo (`#434CE6` Light / `#8B95F6` Dark)** with warm parchment surfaces (`#F2EFE9`), subtle stone hairlines (`#E4E0D8`), and true charcoal-obsidian dark mode (`#111215` / `#181A1F`)—eliminating heavy borders-on-boxes in favor of tonal layering and whitespace.
-- **Confirmed Decision 2 — Editorial Typography Pairing**: Bundle local **Playfair Display** (`res/font/playfair_display.ttf`) for editorial display headers and section titles paired with **Inter** (`res/font/inter.ttf`) for crisp UI controls, metadata, and tabular numerals.
-- **Confirmed Decision 3 — Decluttered Tools Grid**: Replace the overloaded 2-line description cards and full-width orphan stretching with **horizontal Category Filter Pills** + **uniform-height 2-column Bento tiles** (`Icon + 1-line title`, with an empty spacer slot whenever a category has an odd item count so cards never stretch to 100% width).
+- **Confirmed Decision 1 — Release Trigger & Versioning**: Triggered automatically when pushing a semantic version tag (`v*.*.*`, such as `v1.2.0`) or on demand via `workflow_dispatch` with a custom version input. In addition, a continuous integration workflow runs on every pull request and push to `main` to catch regressions early.
+- **Confirmed Decision 2 — Published Release Artifacts**: Publishes a signed Universal Release `.apk`, a signed Play Store `.aab` (Android App Bundle), and a `SHA256SUMS.txt` cryptographic verification manifest directly to **GitHub Releases**.
+- **Confirmed Decision 3 — Full Quality & Offline Security Gate**: Every release must pass four automated gates before packaging:
+  1. **100% Offline Manifest & Merged Permission Audit**: Verifies that neither `android.permission.INTERNET` nor `android.permission.ACCESS_NETWORK_STATE` exists in the source manifest or the final merged APK manifest (`aapt2 dump permissions`).
+  2. **Unit & Robolectric Test Suite**: Runs `testDebugUnitTest` across all 31 PDF tools, universal format parsers, and UI flows.
+  3. **Android Lint & Static Analysis**: Runs `lintRelease` / `lintDebug` to catch API compatibility and resource issues.
+  4. **Automated Changelog Generation**: Compiles categorized commit history since the previous Git tag into human-readable release notes with installation and SHA-256 verification instructions.
+
+> [!NOTE]
+> **Preserving AI Studio Signing Configs**: In accordance with platform constraints, the existing `signingConfigs` (`release` and `debugConfig`) in the Gradle build configuration remain untouched and backwards-compatible. The GitHub Actions workflow injects `KEYSTORE_PATH`, `STORE_PASSWORD`, and `KEY_PASSWORD` via environment variables decoded from GitHub Actions Secrets (with an automatic fallback to a generated ephemeral release keystore if secrets are not yet configured in a fork), while dynamic `VERSION_NAME` and `VERSION_CODE` environment variables automatically populate release metadata.
 
 ---
 
 ## 1. Overview & Core Concept
 
-- **What It Does**: Elevates Folio's visual craft across all screens and modals—introducing real rendered page-1 document cover thumbnails, swipe-to-action file rows, a consolidated single-bar filter header in Files, harmonized floating Reader/Annotation toolbars, visual page thumbnail selection in the 3-Step Tool Wizard, a tactile numeric PIN pad for App Lock/Vault, a freehand Signature Drawing Pad, and a segmented visual storage bar.
-- **Target Audience / Persona**: Discerning readers, designers, legal/financial professionals, and researchers who expect the calm typographic elegance of *Readwise Reader*, *Things 3*, and *Craft* combined with a 100% offline PDF studio.
-- **Key Value**: Eliminates visual clutter ("chip fatigue" and cramped toolbars), reduces cognitive load through generous whitespace and clear typographic hierarchy, and makes every interaction—from page flipping to page extraction—tactile and visually grounded.
+- **What It Does**: Provides a complete CI/CD automation system for Folio consisting of:
+  1. **Continuous Integration Workflow (`Android CI`)**: Runs on every push and pull request to `main` to verify compilation, unit/Robolectric tests, Android Lint, and strict offline permission compliance.
+  2. **Automated Release Pipeline (`Android Release`)**: Runs on `v*.*.*` tags or manual dispatch to compute deterministic `versionCode` and `versionName` values, execute the full verification gate, build and sign the production `.apk` and `.aab`, verify the compiled binary contains zero network permissions, generate `SHA256SUMS.txt`, and publish a formatted GitHub Release.
+  3. **In-App Release & Offline Integrity Card**: Enhances the **Settings → About & Privacy** section inside Folio so users can view the active semantic version, build channel, signing/integrity status, and 100% offline verification badge directly on their device.
+- **Target Audience / Persona**: Android end-users downloading signed APKs from GitHub Releases (or F-Droid / Obtainium compatible feeds) who care about verifiable offline privacy and cryptographic checksums, as well as maintainers releasing updates with a single `git tag v1.1.0 && git push --tags`.
+- **Key Value**: Eliminates manual APK building, signing, checksum calculation, and release note drafting while mathematically guaranteeing that no third-party dependency ever sneaks `INTERNET` permissions into a production release.
 
 ---
 
-## 2. User Experience & Visual Design (Screen-by-Screen Audit & Upgrade Blueprint)
+## 2. User Experience & Visual Design
 
-### Visual Identity & Theme Tokens
+### Key User Flows
 
-- **Light Mode (Warm Alabaster & Ink)**:
-  - `--background`: `#FAF8F4` (Warm Alabaster Paper)
-  - `--surface`: `#F3F0EA` (Soft Ivory Stone)
-  - `--surface-container`: `#EAE6DD` (Warm Parchment Container)
-  - `--foreground`: `#141518` (Deep Obsidian Ink)
-  - `--muted-foreground`: `#636670` (Warm Slate Muted Ink)
-  - `--outline-variant`: `#E2DDD3` (1dp Hairline Divider)
-  - `--primary`: `#434CE6` (Muted Royal Indigo)
-  - `--primary-container`: `#E2E5FF` (Soft Indigo Wash)
-- **Dark Mode (True Obsidian Charcoal)**:
-  - `--background`: `#111215` (Deep Obsidian Charcoal—never pure `#000000`)
-  - `--surface`: `#181A1F` (Elevated Graphite)
-  - `--surface-container`: `#20232A` (Slate Surface Container)
-  - `--foreground`: `#F4F2ED` (Warm Alabaster Text)
-  - `--muted-foreground`: `#9BA0AE` (Muted Silver-Slate)
-  - `--outline-variant`: `#292D36` (Subtle Hairline Border)
-  - `--primary`: `#8B95F6` (Luminous Muted Indigo)
-  - `--primary-container`: `#262C6A` (Deep Indigo Container)
-- **Typography Scale**:
-  - `displayLarge` / `displayMedium` / `headlineLarge`: **Playfair Display** (SemiBold/Bold, tight `-0.4sp` tracking) for screen titles and editorial hero headers.
-  - `titleMedium` / `bodyLarge` / `labelMedium`: **Inter** with generous `1.5x` line height and tabular figures for page counts, file sizes, and progress metrics.
+1. **Maintainer Tag Release Flow**:
+   - Maintainer pushes a tag (`git tag v1.2.0 && git push origin v1.2.0`) or clicks **Run workflow** in the GitHub Actions tab and enters `1.2.0`.
+   - GitHub Actions spins up the pipeline, validates the 100% offline manifest rule, runs the Robolectric test suite and Lint, compiles and signs `Folio-v1.2.0-universal-release.apk` and `Folio-v1.2.0-release.aab`, verifies the built APK with `aapt2`, generates `SHA256SUMS.txt`, and publishes a complete GitHub Release with categorized release notes.
+2. **Android User Download & Obtainium / GitHub Release Flow**:
+   - Android users visit the GitHub Releases page (or point an updater like Obtainium to the repository).
+   - Users see the structured release changelog, download `Folio-v1.2.0-universal-release.apk`, and optionally verify its SHA-256 fingerprint against `SHA256SUMS.txt`.
+3. **In-App Release & Offline Verification Flow (Settings → About)**:
+   - Inside Folio's **Settings** screen, the **About & Offline Integrity** card displays the current `versionName` (`BuildConfig.VERSION_NAME`), `versionCode` (`BuildConfig.VERSION_CODE`), package identifier, and an interactive **Verify Runtime Offline Guarantee** inspector that confirms zero network permissions are granted to the installed APK at runtime.
 
----
-
-### Screen 1: Home (`HomeScreen`)
-- **Intended Minimal/Premium Look**: A calm, magazine-like reading desk. Generous top breathing room, a Playfair Display `"Folio"` masthead, an understated search pill, a rich **"Continue Reading" Editorial Showcase Card** featuring a real rendered page-1 miniature cover with a subtle paper edge, a refined 4-icon Quick Actions dock, and borderless file rows separated by 1dp hairline dividers.
-- **Layout Overloads Fixed**:
-  - *Before*: Search history chips were permanently rendered below the search bar, and every file row had a heavy `1.dp` border, filled box, star icon, and delete icon.
-  - *After*: Search history chips appear **only when the search field is active/focused**. File rows use clean hairline dividers, real miniature paper cover thumbnails, and `SwipeToDismissBox` gestures (swipe right to Favourite, swipe left to Trash) plus a single subtle `⋯` menu.
-- **Design Mismatches Fixed**:
-  - Replaces generic 4-letter text squares (`PDF`, `DOCX`) with asynchronous rendered miniature page previews (`PaperThumbnailPreview`).
-
-### Screen 2: Tools (`ToolsScreen`)
-- **Intended Minimal/Premium Look**: A precision Swiss instrument panel. Pinned recent tools appear as sleek monochrome-and-indigo pills at the top, followed by a single horizontal **Category Filter Bar** (`All`, `Organize`, `Optimize`, `Convert To`, `Convert From`, `Annotate`, `Enhance`, `Security`) and a uniform 2-column Bento grid.
-- **Layout Overloads Fixed**:
-  - *Before*: 31 cards all showed 2-line descriptions simultaneously, and categories with an odd number of tools (3 or 5) stretched the final orphan card across 100% of the screen width.
-  - *After*: Each Bento tile has a fixed, uniform height (`84.dp`) displaying the thin-line icon + crisp 1-line title + subtle subtitle truncation, and odd-numbered rows automatically insert an invisible `Spacer(Modifier.weight(1f))` so no card ever stretches to double width.
-
-### Screen 3: Files (`FilesScreen` — List & Grid)
-- **Intended Minimal/Premium Look**: An archival library shelf. Top segmented switcher (`Library` • `Private Vault` • `Trash`), a single unified **Filter & Sort Bar** combining Folder/Tag selection with a compact Sort dropdown and Grid/List toggle, and real vertical document cover cards in Grid mode.
-- **Layout Overloads Fixed**:
-  - *Before*: Stacked 4 consecutive horizontal rows of `FilterChip`s (`Section`, `Folders`, `Tags`, `Sort by`) consuming ~190dp at the top of the screen.
-  - *After*: Consolidates `Section` into a sleek 3-segment pill bar and merges `Folder`, `Tag`, `Sort`, and `Grid/List` into a single compact toolbar row with dropdown/sheet pickers—reclaiming over 120dp of vertical whitespace.
-- **Design Mismatches Fixed**:
-  - Grid mode now displays true vertical aspect-ratio document cover cards with a `⋯` action button, and Private Vault uses a tactile **Numeric PIN Keypad** with animated dot indicators instead of a raw text field.
-
-### Screen 4: Universal Reader (`UniversalReaderScreen` with Reading & Editing Toolbars)
-- **Intended Minimal/Premium Look**: The document page is the undisputed hero. Chrome floats lightly with rounded pill geometry (`24.dp`–`28.dp` corners) and identical height/elevation tokens whether in Reading mode or Annotation mode.
-- **Layout Overloads Fixed**:
-  - *Before*: Opening search, the full-width bottom page slider, the 15-chip annotation bar, and the bottom icon bar consumed ~40% of vertical screen space.
-  - *After*: Replaces the bulky double-decker bottom dock with a **Floating Reader Pill Dock** and a compact **Contextual Annotation Floating Pill** that replaces (rather than stacks on top of) the reading dock when Annotate mode is active.
-- **Design Mismatches Fixed**:
-  - Harmonizes the Top Bar, Reading Pill, and Annotation Pill with matching tonal elevation and icon sizing.
-  - Upgrades the **Thumbnails Tab** in the Navigation Sheet to render **real asynchronous page bitmaps** instead of generic book icons.
-  - Upgrades the **Annotation Canvas** so `Highlight` draws a wide translucent marker band, `Rectangle` and `Circle` draw crisp geometric shapes, `Arrow` draws a directional vector, and `Pen` draws smooth freehand ink.
-
-### Screen 5: Settings (`SettingsScreen`) & 3-Step Tool Wizard (`UnifiedToolWizardScreen`)
-- **Intended Minimal/Premium Look**:
-  - **Settings**: Clean grouped editorial sections with a **Segmented Visual Storage Bar** (color-coded by Library, Outputs, Vault, and Cache), a hidden/masked PIN change dialog, and an interactive **Freehand Signature Drawing Pad Modal** where users can draw their signature with a finger/stylus.
-  - **3-Step Tool Wizard**: Step 2 now features a **Visual Page Thumbnail Grid Picker** (showing rendered miniature page previews with selection checkmarks and rotation badges) instead of plain `[Page 1]` text chips, and Step 3 displays an **Inline Rendered Output Page Preview** right inside the Result screen.
+### Visual Identity & Theme (In-App Release & Integrity Inspector)
+- **Aesthetic Direction**: Warm Editorial Paper & Obsidian Ink aesthetic matching Folio's redesigned UI.
+- **Color Palette & Mood**:
+  - Light Surface: Warm Alabaster (`#FAF8F4`) & Soft Parchment (`#F3F0EA`) with 1dp Stone Hairlines (`#E4E0D8`).
+  - Dark Surface: True Charcoal (`#111215`) & Elevated Slate (`#181A1F`) with 1dp Hairlines (`#262932`).
+  - Accent: Muted Royal Indigo (`#434CE6` Light / `#8B95F6` Dark).
+- **Typography & Hierarchy**:
+  - Section Title in bundled **Playfair Display** (`titleMedium` / `headlineMedium`).
+  - Version numbers, SHA-256 digests, and permission audit badges in bundled **Inter** with tabular numerals (`tnum`).
 
 ---
 
 ## 3. Key Product Decisions & Trade-Offs
 
-- **Decision 1 — Playfair Display + Inter Local Font Pairing**
-  - *Chosen Approach*: Install `Playfair Display` via `font-util` into `app/src/main/res/font/playfair_display.ttf` and pair it with `Inter` in `Type.kt`.
-  - *Why*: Gives Folio an unmistakable high-craft editorial personality on mastheads, onboarding headers, and hero cards while keeping dense tool controls and page numbers ultra-legible in Inter.
-- **Decision 2 — Asynchronous Paper Thumbnail Component (`DocumentPageThumbnail`)**
-  - *Chosen Approach*: Build a reusable Compose component backed by `MultiFormatDocumentEngine`'s memory-safe `LruCache` that renders miniature page bitmaps off the main thread (`Dispatchers.IO`) with a warm paper background, subtle border, and shimmer placeholder.
-  - *Why*: Eliminates the "developer placeholder" look across Home, Files (List & Grid), Reader Thumbnails sheet, Tool Wizard Step 2 page picker, and Tool Wizard Step 3 result preview.
-- **Decision 3 — Unified Mode-Switching Floating Dock in Reader**
-  - *Chosen Approach*: Instead of stacking the Annotation Toolbar on top of the Bottom AppBar and Scrubber, switch cleanly between the **Reading Floating Pill** and the **Editing/Annotation Floating Pill** using `AnimatedContent`.
-  - *Why*: Preserves maximum vertical reading canvas and eliminates toolbar clashing.
+- **Decision 1: Environment-Driven Dynamic Versioning with Local Fallback**
+  - *Chosen Approach*: Read `VERSION_NAME` and `VERSION_CODE` from environment variables in the Gradle build configuration, defaulting seamlessly to `"1.0.0"` and `1` for local AI Studio builds. In CI, tags like `v1.2.3` automatically compute `VERSION_NAME = "1.2.3"` and a monotonic integer `VERSION_CODE = 10203` (`major * 10000 + minor * 100 + patch`).
+  - *Why*: Guarantees that Android OS package upgrades (`versionCode` strictly increasing) always succeed without requiring manual commits to bump numbers before tagging.
+  - *Alternatives Considered*: Committing version bumps back to `main` from CI—passed over because it creates noisy bot commits and can conflict with branch protection rules.
+
+- **Decision 2: Two-Stage Offline Permission Audit (Source XML + Compiled Binary)**
+  - *Chosen Approach*: Audit both the source `AndroidManifest.xml` and the final compiled `release.apk` using Android SDK's `aapt2 dump permissions`. If `android.permission.INTERNET` or `android.permission.ACCESS_NETWORK_STATE` appears anywhere in the compiled APK, the pipeline fails immediately and blocks release publication.
+  - *Why*: Transitive dependencies can merge unexpected permissions during manifest merger. Inspecting the final compiled APK binary with `aapt2` provides cryptographic certainty that the released app is 100% offline.
+
+- **Decision 3: Compatible Signing Pipeline with Secret Injection**
+  - *Chosen Approach*: Preserve the exact `signingConfigs` block in the Gradle configuration (`KEYSTORE_PATH`, `STORE_PASSWORD`, `KEY_PASSWORD` with key alias `upload`). In GitHub Actions, decode `RELEASE_KEYSTORE_BASE64` into the workspace and pass the credentials via environment variables. If a developer forks the repo and triggers a test release before configuring secrets, the workflow gracefully generates an ephemeral keystore for the `upload` alias and notes it in the release summary so the pipeline never crashes out-of-the-box.
 
 ---
 
 ## 4. Technical Architecture & Data Strategy *(Technical Reference)*
 
-### Architecture & Component Upgrade Diagram
+### Architecture & Pipeline Diagram
 
 ```
-┌──────────────────────────────────────────────────────────────────────────────┐
-│                     PREMIUM EDITORIAL DESIGN SYSTEM LAYER                    │
-│  • Typography: Playfair Display (Headers) + Inter (UI/Body/Tabular Numerals) │
-│  • Palette: Warm Alabaster (#FAF8F4) / Obsidian (#111215) / Indigo (#434CE6) │
-│  • Shared Components: DocumentPageThumbnail, TactilePinPad, SignaturePadDialog│
-└───────────────┬──────────────────────────────────────────────┬───────────────┘
-                ▼                                              ▼
-┌───────────────────────────────────────┐      ┌───────────────────────────────┐
-│      DECLUTTERED WORKSPACE SHELL      │      │   HARMONIZED READER & WIZARD  │
-│ • HomeScreen: Editorial Hero w/ live  │      │ • UniversalReaderScreen:      │
-│   page-1 cover + SwipeToDismiss rows  │      │   Unified Floating Pill Dock  │
-│ • ToolsScreen: Category filter pills  │      │   + Real Bitmap Thumbnails    │
-│   + Fixed-height 2-col Bento grid     │      │   + Geometric/Highlight Canvas│
-│ • FilesScreen: Single-row Filter/Sort │      │ • UnifiedToolWizardScreen:    │
-│   toolbar + Cover Grid + PinPad Vault │      │   Visual Page Thumbnail Grid  │
-│ • SettingsScreen: Segmented Storage   │      │   Picker (Step 2) + Inline    │
-│   Bar + Freehand Signature Pad Modal  │      │   Output Preview (Step 3)     │
-└───────────────────────────────────────┘      └───────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                        GITHUB REPOSITORY EVENTS                             │
+│   • Push Tag: v*.*.* (e.g., v1.2.0)                                         │
+│   • Manual Dispatch: workflow_dispatch (custom version input)               │
+│   • Push / PR to main (Continuous Integration Gate)                         │
+└──────────────────────────────────────┬──────────────────────────────────────┘
+                                       │
+                                       ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                 STAGE 1: QUALITY & OFFLINE SECURITY GATE                    │
+│  ┌──────────────────────────┐  ┌──────────────────────┐  ┌───────────────┐  │
+│  │ Source Manifest Audit    │  │ Unit & Robolectric   │  │ Android Lint  │  │
+│  │ Verify tools:node=remove │─▶│ :app:testDebugUnitTest│─▶│ :app:lintDebug│  │
+│  │ for INTERNET permissions │  │ (31 PDF Tools + UI)  │  │ Static Checks │  │
+│  └──────────────────────────┘  └──────────────────────┘  └───────────────┘  │
+└──────────────────────────────────────┬──────────────────────────────────────┘
+                                       │
+                                       ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│             STAGE 2: SEMANTIC VERSIONING & SIGNED RELEASE BUILD             │
+│  • Parse Tag vX.Y.Z ──▶ VERSION_NAME="X.Y.Z", VERSION_CODE=(X*10000+Y*100+Z)│
+│  • Decode RELEASE_KEYSTORE_BASE64 ──▶ KEYSTORE_PATH, STORE_PASSWORD         │
+│  • Execute: gradle :app:assembleRelease :app:bundleRelease                  │
+└──────────────────────────────────────┬──────────────────────────────────────┘
+                                       │
+                                       ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│           STAGE 3: BINARY PERMISSION AUDIT & ARTIFACT PACKAGING             │
+│  • Run `aapt2 dump permissions Folio-vX.Y.Z-universal-release.apk`          │
+│  • Fail build if INTERNET or ACCESS_NETWORK_STATE is present in binary      │
+│  • Rename outputs:                                                          │
+│      - Folio-vX.Y.Z-universal-release.apk                                   │
+│      - Folio-vX.Y.Z-release.aab                                             │
+│      - SHA256SUMS.txt (sha256sum of APK & AAB)                              │
+└──────────────────────────────────────┬──────────────────────────────────────┘
+                                       │
+                                       ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                STAGE 4: GITHUB RELEASE & CHANGELOG PUBLISHER                │
+│  • Generate categorized Markdown changelog from Git history since last tag  │
+│  • Attach signed APK, AAB, and SHA256SUMS.txt via softprops/action-gh-release│
+└─────────────────────────────────────────────────────────────────────────────┘
 ```
 
 ### Interactive Component & State Mapping
 
-1. **`DESIGN_AUDIT.md`**: Updated and structured around the 5 core screens (`Home`, `Tools`, `Files`, `Reader`, `Settings`) plus Onboarding and Wizard, detailing the intended minimal/premium look, layout overloads, design mismatches, and how whitespace and typography resolve each issue.
-2. **`DocumentPageThumbnail` Composable**: Renders any `File` and `pageIndex` via `MultiFormatDocumentEngine.renderPageBitmap()` into an aspect-ratio paper card with optional selection badge and rotation indicator.
-3. **`TactilePinPad` & `SignaturePadDialog` Composables**:
-   - `TactilePinPad`: 4-dot indicator + 3x4 circular numeric keypad + Biometric trigger for App Lock and Private Vault.
-   - `SignaturePadDialog`: Interactive freehand `Canvas` drawing pad + typed script preview, saving serialized stroke points to `SignatureEntity`.
-4. **Floating Dock Scrim & Tab Animation**: Compact floating navigation bar with a soft bottom gradient scrim and smooth pill indicator.
+1. **Gradle Dynamic Version & BuildConfig Bridge**:
+   - Reads `System.getenv("VERSION_NAME")` and `System.getenv("VERSION_CODE")?.toIntOrNull()` inside `defaultConfig`, falling back to `"1.0.0"` and `1`.
+   - Exposes `BuildConfig.VERSION_NAME` and `BuildConfig.VERSION_CODE` to the Android app without modifying any signingConfig rules.
+2. **Offline Manifest & APK Verification Script**:
+   - Reusable shell verification script executed by both GitHub Actions workflows and available locally to verify:
+     - `AndroidManifest.xml` strips `INTERNET` and `ACCESS_NETWORK_STATE` via `tools:node="remove"`.
+     - Compiled APK contains zero network permissions when inspected via `aapt2`.
+3. **In-App Release & Runtime Offline Inspector (Settings Screen)**:
+   - In the **Settings** screen's **About Folio** card, displays:
+     - Semantic Version & Version Code (`v1.0.0 (Build 1)`).
+     - Package ID (`com.aistudio.folio.docpdf`).
+     - Interactive **"Verify Offline APK Integrity"** button that queries Android's `PackageManager.getPackageInfo(packageName, GET_PERMISSIONS)` at runtime and displays a verified badge confirming `0 Network Permissions Granted` alongside release pipeline documentation.
+4. **Release Documentation (`RELEASE_PIPELINE.md`)**:
+   - Provides step-by-step instructions for generating a signing keystore, encoding it as Base64 for GitHub Secrets (`RELEASE_KEYSTORE_BASE64`, `STORE_PASSWORD`, `KEY_PASSWORD`), and triggering automated releases via Git tags or manual dispatch.

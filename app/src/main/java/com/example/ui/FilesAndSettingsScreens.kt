@@ -923,8 +923,11 @@ fun SettingsScreen(
             }
         }
 
-        // 5. About & 100% Offline Attestation
+        // 5. About, Release Pipeline & 100% Offline Runtime Attestation
         item {
+            val context = LocalContext.current
+            var liveAuditReport by remember { mutableStateOf<OfflineReleaseAuditReport?>(null) }
+
             Card(
                 shape = RoundedCornerShape(22.dp),
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
@@ -932,16 +935,82 @@ fun SettingsScreen(
                     .fillMaxWidth()
                     .border(1.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(22.dp))
             ) {
-                Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Icon(Icons.Outlined.VerifiedUser, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
-                        Text("Folio v1.0 — 100% Offline Guarantee", style = MaterialTheme.typography.titleMedium)
+                Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Icon(Icons.Outlined.VerifiedUser, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                            Column {
+                                Text(
+                                    text = "Folio v${com.example.BuildConfig.VERSION_NAME} (Build ${com.example.BuildConfig.VERSION_CODE})",
+                                    style = MaterialTheme.typography.titleMedium
+                                )
+                                Text(
+                                    text = "${com.example.BuildConfig.APPLICATION_ID} • GitHub Releases Channel",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                        Surface(
+                            shape = RoundedCornerShape(10.dp),
+                            color = MaterialTheme.colorScheme.primaryContainer
+                        ) {
+                            Text(
+                                text = "100% OFFLINE",
+                                style = MaterialTheme.typography.labelSmall,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.onPrimaryContainer,
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                            )
+                        }
                     }
+
                     Text(
-                        "Permissions Audit: INTERNET and ACCESS_NETWORK_STATE are strictly omitted. Playfair Display & Inter typography, AndroidX PdfRenderer, PdfBox-Android (Apache 2.0), CameraX, and Room run locally on-device.",
+                        "Permissions Audit: INTERNET and ACCESS_NETWORK_STATE are stripped at build time and verified in CI via aapt2. Playfair Display & Inter typography, AndroidX PdfRenderer, PdfBox-Android (Apache 2.0), CameraX, and Room run 100% locally on-device.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
+
+                    val report = liveAuditReport
+                    if (report != null) {
+                        Surface(
+                            shape = RoundedCornerShape(14.dp),
+                            color = if (report.isStrictlyOffline) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.55f)
+                            else MaterialTheme.colorScheme.errorContainer,
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                Text(
+                                    text = if (report.isStrictlyOffline) "Runtime APK Audit Passed: 0 Network Permissions"
+                                    else "Warning: Network Permission Detected",
+                                    style = MaterialTheme.typography.titleSmall,
+                                    color = if (report.isStrictlyOffline) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error
+                                )
+                                Text(
+                                    text = "INTERNET: ${if (report.hasInternetPermission) "Present" else "Stripped (None)"}  •  ACCESS_NETWORK_STATE: ${if (report.hasNetworkStatePermission) "Present" else "Stripped (None)"}",
+                                    style = MaterialTheme.typography.labelSmall
+                                )
+                                Text(
+                                    text = "Declared Install/Runtime Permissions (${report.requestedPermissions.size}): ${report.requestedPermissions.joinToString { it.substringAfterLast('.') }.ifBlank { "None" }}",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                    }
+
+                    OutlinedButton(
+                        onClick = { liveAuditReport = inspectRuntimeReleaseIntegrity(context) },
+                        modifier = Modifier.fillMaxWidth().testTag("settings_verify_offline_button")
+                    ) {
+                        Icon(Icons.Outlined.VerifiedUser, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(Modifier.width(8.dp))
+                        Text(if (liveAuditReport == null) "Verify Runtime Offline APK Integrity" else "Re-Run Runtime Offline Audit")
+                    }
                 }
             }
         }

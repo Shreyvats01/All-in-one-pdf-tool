@@ -444,3 +444,37 @@ private fun StorageLegendItem(label: String, sizeText: String, dotColor: Color) 
         }
     }
 }
+
+/**
+ * Runtime audit report for Folio's 100% offline release & permission guarantee.
+ */
+data class OfflineReleaseAuditReport(
+    val packageName: String,
+    val versionName: String,
+    val versionCode: Int,
+    val requestedPermissions: List<String>,
+    val hasInternetPermission: Boolean,
+    val hasNetworkStatePermission: Boolean
+) {
+    val isStrictlyOffline: Boolean
+        get() = !hasInternetPermission && !hasNetworkStatePermission
+}
+
+fun inspectRuntimeReleaseIntegrity(context: android.content.Context): OfflineReleaseAuditReport {
+    val pkgInfo = context.packageManager.getPackageInfo(
+        context.packageName,
+        android.content.pm.PackageManager.GET_PERMISSIONS
+    )
+    val perms = pkgInfo.requestedPermissions?.toList() ?: emptyList()
+    val hasInternet = perms.contains(android.Manifest.permission.INTERNET)
+    val hasNetState = perms.contains(android.Manifest.permission.ACCESS_NETWORK_STATE)
+    return OfflineReleaseAuditReport(
+        packageName = context.packageName,
+        versionName = com.example.BuildConfig.VERSION_NAME,
+        versionCode = com.example.BuildConfig.VERSION_CODE,
+        requestedPermissions = perms,
+        hasInternetPermission = hasInternet,
+        hasNetworkStatePermission = hasNetState
+    )
+}
+

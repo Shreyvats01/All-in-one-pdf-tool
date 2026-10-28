@@ -98,4 +98,17 @@ class ExampleRobolectricTest {
         val decrypted = VaultCryptoManager.decryptVaultFileToTemp(context, encrypted, "txt", "1234")
         assertEquals("Confidential Offline Payload 2026", decrypted.readText())
     }
+
+    @Test
+    fun verifyRuntimeReleaseIntegrityAuditAndVersioning() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val report = com.example.ui.inspectRuntimeReleaseIntegrity(context)
+
+        assertTrue("Runtime offline audit must confirm strictly offline APK", report.isStrictlyOffline)
+        assertFalse(report.hasInternetPermission)
+        assertFalse(report.hasNetworkStatePermission)
+        assertTrue("Version name must be populated", report.versionName.isNotBlank())
+        assertTrue("Version code must be >= 1", report.versionCode >= 1)
+    }
 }
+

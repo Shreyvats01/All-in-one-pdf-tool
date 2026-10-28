@@ -1,0 +1,227 @@
+name: Android Automated Release Pipeline
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Semantic version to release (e.g., 1.2.0)"
+        required: true
+        default: "1.0.0"
+      prerelease:
+        description: "Mark release as a pre-release on GitHub"
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+jobs:
+  quality-and-offline-gate:
+    name: 1. Quality, Robolectric & Offline Gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: "temurin"
+          java-version: "17"
+
+      - name: Setup Gradle & Cache
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Ensure Debug Keystore Exists
+        run: |
+          if [[ ! -f "debug.keystore" ]]; then
+            keytool -genkeypair -v \
+              -keystore debug.keystore \
+              -storepass android \
+              -alias androiddebugkey \
+              -keypass android \
+              -keyalg RSA \
+              -keysize 2048 \
+              -validity 10000 \
+              -dname "CN=Android Debug,O=Android,C=US"
+          fi
+
+      - name: Audit Source AndroidManifest.xml for 100% Offline Compliance
+        run: |
+          chmod +x scripts/verify_offline_release.sh
+          bash scripts/verify_offline_release.sh
+
+      - name: Run Unit & Robolectric Test Suite
+        run: gradle :app:testDebugUnitTest --stacktrace
+
+      - name: Run Android Lint Verification
+        run: gradle :app:lintDebug --stacktrace
+
+  build-sign-and-release:
+    name: 2. Build Signed APK/AAB & Publish GitHub Release
+    needs: quality-and-offline-gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+
+    steps:
+      - name: Checkout Repository (Full History for Changelog)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: "temurin"
+          java-version: "17"
+
+      - name: Setup Gradle & Cache
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Compute Semantic Version & Monotonic Android VersionCode
+        id: semver
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            RAW_VER="${{ github.event.inputs.version }}"
+          else
+            RAW_VER="${GITHUB_REF_NAME}"
+          fi
+
+          CLEAN_VER="${RAW_VER#v}"
+          TAG_NAME="v${CLEAN_VER}"
+
+          IFS='.' read -r MAJOR MINOR PATCH_RAW <<< "$CLEAN_VER"
+          MAJOR=${MAJOR:-1}
+          MINOR=${MINOR:-0}
+          PATCH=$(echo "${PATCH_RAW:-0}" | sed 's/[^0-9].*//')
+          PATCH=${PATCH:-0}
+
+          COMPUTED_CODE=$(( MAJOR * 10000 + MINOR * 100 + PATCH ))
+          if [[ "$COMPUTED_CODE" -le 0 ]]; then
+            COMPUTED_CODE="${GITHUB_RUN_NUMBER:-1}"
+          fi
+
+          echo "VERSION_NAME=${CLEAN_VER}" >> "$GITHUB_ENV"
+          echo "VERSION_CODE=${COMPUTED_CODE}" >> "$GITHUB_ENV"
+          echo "TAG_NAME=${TAG_NAME}" >> "$GITHUB_ENV"
+
+          echo "version_name=${CLEAN_VER}" >> "$GITHUB_OUTPUT"
+          echo "version_code=${COMPUTED_CODE}" >> "$GITHUB_OUTPUT"
+          echo "tag_name=${TAG_NAME}" >> "$GITHUB_OUTPUT"
+          echo "Resolved Release: v${CLEAN_VER} (versionCode=${COMPUTED_CODE})"
+
+      - name: Prepare Release Signing Keystore
+        env:
+          RELEASE_KEYSTORE_BASE64: ${{ secrets.RELEASE_KEYSTORE_BASE64 }}
+          RELEASE_STORE_PASSWORD: ${{ secrets.RELEASE_STORE_PASSWORD }}
+          RELEASE_KEY_PASSWORD: ${{ secrets.RELEASE_KEY_PASSWORD }}
+        run: |
+          if [[ ! -f "debug.keystore" ]]; then
+            keytool -genkeypair -v \
+              -keystore debug.keystore \
+              -storepass android \
+              -alias androiddebugkey \
+              -keypass android \
+              -keyalg RSA \
+              -keysize 2048 \
+              -validity 10000 \
+              -dname "CN=Android Debug,O=Android,C=US"
+          fi
+
+          KEYSTORE_FILE="${GITHUB_WORKSPACE}/my-upload-key.jks"
+          if [[ -n "$RELEASE_KEYSTORE_BASE64" ]]; then
+            echo "Decoding production release keystore from GitHub Secrets..."
+            echo "$RELEASE_KEYSTORE_BASE64" | base64 --decode > "$KEYSTORE_FILE"
+            echo "KEYSTORE_PATH=${KEYSTORE_FILE}" >> "$GITHUB_ENV"
+            echo "STORE_PASSWORD=${RELEASE_STORE_PASSWORD}" >> "$GITHUB_ENV"
+            echo "KEY_PASSWORD=${RELEASE_KEY_PASSWORD}" >> "$GITHUB_ENV"
+          else
+            echo "::warning::RELEASE_KEYSTORE_BASE64 secret is not configured. Generating an ephemeral release keystore for alias 'upload' so the build succeeds."
+            EPHEMERAL_PASS="folio_release_pass_2026"
+            keytool -genkeypair -v \
+              -keystore "$KEYSTORE_FILE" \
+              -storepass "$EPHEMERAL_PASS" \
+              -alias upload \
+              -keypass "$EPHEMERAL_PASS" \
+              -keyalg RSA \
+              -keysize 2048 \
+              -validity 10000 \
+              -dname "CN=Folio Offline Release,OU=Mobile,O=Folio,C=US"
+            echo "KEYSTORE_PATH=${KEYSTORE_FILE}" >> "$GITHUB_ENV"
+            echo "STORE_PASSWORD=${EPHEMERAL_PASS}" >> "$GITHUB_ENV"
+            echo "KEY_PASSWORD=${EPHEMERAL_PASS}" >> "$GITHUB_ENV"
+          fi
+
+      - name: Build Signed Release APK & Play Store App Bundle (AAB)
+        run: |
+          gradle :app:assembleRelease :app:bundleRelease --stacktrace
+
+      - name: Audit Compiled Release APK Binary for Zero Network Permissions
+        run: |
+          chmod +x scripts/verify_offline_release.sh
+          RELEASE_APK=$(find app/build/outputs/apk/release -name "*.apk" | head -n 1)
+          if [[ -z "$RELEASE_APK" ]]; then
+            echo "[ERROR] Signed release APK was not found in app/build/outputs/apk/release"
+            exit 1
+          fi
+          bash scripts/verify_offline_release.sh "$RELEASE_APK"
+
+      - name: Package Artifacts & Generate SHA-256 Checksums
+        run: |
+          mkdir -p dist
+          RELEASE_APK=$(find app/build/outputs/apk/release -name "*.apk" | head -n 1)
+          RELEASE_AAB=$(find app/build/outputs/bundle/release -name "*.aab" | head -n 1)
+
+          TARGET_APK="dist/Folio-v${VERSION_NAME}-universal-release.apk"
+          TARGET_AAB="dist/Folio-v${VERSION_NAME}-release.aab"
+
+          cp "$RELEASE_APK" "$TARGET_APK"
+          cp "$RELEASE_AAB" "$TARGET_AAB"
+
+          (
+            cd dist
+            sha256sum "Folio-v${VERSION_NAME}-universal-release.apk" "Folio-v${VERSION_NAME}-release.aab" > SHA256SUMS.txt
+          )
+
+          cat dist/SHA256SUMS.txt
+
+      - name: Generate Categorized Release Changelog
+        run: |
+          chmod +x scripts/generate_changelog.sh
+          bash scripts/generate_changelog.sh "${TAG_NAME}" "dist" "dist/RELEASE_NOTES.md"
+          cat dist/RELEASE_NOTES.md
+
+      - name: Upload Build Artifacts to Workflow Summary
+        uses: actions/upload-artifact@v4
+        with:
+          name: Folio-${{ steps.semver.outputs.tag_name }}-Release-Bundle
+          path: |
+            dist/Folio-v*-universal-release.apk
+            dist/Folio-v*-release.aab
+            dist/SHA256SUMS.txt
+            dist/RELEASE_NOTES.md
+
+      - name: Publish Release to GitHub Releases
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.semver.outputs.tag_name }}
+          name: "Folio ${{ steps.semver.outputs.tag_name }} (Build ${{ steps.semver.outputs.version_code }})"
+          body_path: dist/RELEASE_NOTES.md
+          prerelease: ${{ github.event.inputs.prerelease == 'true' }}
+          generate_release_notes: false
+          files: |
+            dist/Folio-v${{ steps.semver.outputs.version_name }}-universal-release.apk
+            dist/Folio-v${{ steps.semver.outputs.version_name }}-release.aab
+            dist/SHA256SUMS.txt
+
+      - name: Clean Up Ephemeral Keystore File
+        if: always()
+        run: rm -f "${GITHUB_WORKSPACE}/my-upload-key.jks"
