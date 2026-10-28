@@ -2,14 +2,17 @@ name: Android Automated Release Pipeline
 
 on:
   push:
+    branches:
+      - "main"
+      - "master"
     tags:
       - "v*.*.*"
   workflow_dispatch:
     inputs:
       version:
-        description: "Semantic version to release (e.g., 1.2.0)"
-        required: true
-        default: "1.0.0"
+        description: "Optional semantic version override (e.g., 1.2.0). Leave blank for auto-version."
+        required: false
+        default: ""
       prerelease:
         description: "Mark release as a pre-release on GitHub"
         required: false
@@ -18,6 +21,10 @@ on:
 
 permissions:
   contents: write
+
+concurrency:
+  group: android-release-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   quality-and-offline-gate:
@@ -39,6 +46,8 @@ jobs:
 
       - name: Setup Gradle & Cache
         uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "9.3.1"
 
       - name: Ensure Debug Keystore Exists
         run: |
@@ -72,13 +81,13 @@ jobs:
         run: gradle :app:lintDebug --stacktrace
 
   build-sign-and-release:
-    name: 2. Build Signed APK/AAB & Publish GitHub Release
+    name: 2. Auto-Version, Build Signed APK/AAB & Publish GitHub Release
     needs: quality-and-offline-gate
     runs-on: ubuntu-latest
     timeout-minutes: 35
 
     steps:
-      - name: Checkout Repository (Full History for Changelog)
+      - name: Checkout Repository (Full History for Auto-Versioning & Changelog)
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
@@ -91,14 +100,51 @@ jobs:
 
       - name: Setup Gradle & Cache
         uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "9.3.1"
 
-      - name: Compute Semantic Version & Monotonic Android VersionCode
+      - name: Compute Automatic Semantic Version & Monotonic Android VersionCode
         id: semver
         run: |
-          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+          RUN_NUM="${GITHUB_RUN_NUMBER:-1}"
+
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" && -n "${{ github.event.inputs.version }}" ]]; then
             RAW_VER="${{ github.event.inputs.version }}"
-          else
+          elif [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
             RAW_VER="${GITHUB_REF_NAME}"
+          else
+            # Automatic release on push to main/master:
+            # Find latest vX.Y.Z tag or start from 1.0.<RUN_NUM>
+            LATEST_TAG=$(git tag -l "v[0-9]*.[0-9]*.[0-9]*" --sort=-v:refname | head -n 1 || true)
+            LAST_MSG=$(git log -1 --pretty=%B || true)
+
+            if [[ -n "$LATEST_TAG" ]]; then
+              BASE_VER="${LATEST_TAG#v}"
+              IFS='.' read -r MAJ MIN PAT <<< "$BASE_VER"
+              MAJ=${MAJ:-1}
+              MIN=${MIN:-0}
+              PAT=$(echo "${PAT:-0}" | sed 's/[^0-9].*//')
+              PAT=${PAT:-0}
+
+              if echo "$LAST_MSG" | grep -qE "BREAKING CHANGE|!:"; then
+                MAJ=$(( MAJ + 1 ))
+                MIN=0
+                PAT=0
+              elif echo "$LAST_MSG" | grep -qiE "^feat(\(.*\))?:"; then
+                MIN=$(( MIN + 1 ))
+                PAT=0
+              else
+                PAT=$(( PAT + 1 ))
+              fi
+              RAW_VER="${MAJ}.${MIN}.${PAT}"
+
+              # Ensure tag uniqueness if tag already exists
+              if git rev-parse "v${RAW_VER}" >/dev/null 2>&1; then
+                RAW_VER="${MAJ}.${MIN}.${RUN_NUM}"
+              fi
+            else
+              RAW_VER="1.0.${RUN_NUM}"
+            fi
           fi
 
           CLEAN_VER="${RAW_VER#v}"
@@ -110,9 +156,9 @@ jobs:
           PATCH=$(echo "${PATCH_RAW:-0}" | sed 's/[^0-9].*//')
           PATCH=${PATCH:-0}
 
-          COMPUTED_CODE=$(( MAJOR * 10000 + MINOR * 100 + PATCH ))
+          COMPUTED_CODE=$(( MAJOR * 10000 + MINOR * 100 + PATCH + RUN_NUM ))
           if [[ "$COMPUTED_CODE" -le 0 ]]; then
-            COMPUTED_CODE="${GITHUB_RUN_NUMBER:-1}"
+            COMPUTED_CODE="$RUN_NUM"
           fi
 
           echo "VERSION_NAME=${CLEAN_VER}" >> "$GITHUB_ENV"
@@ -122,7 +168,7 @@ jobs:
           echo "version_name=${CLEAN_VER}" >> "$GITHUB_OUTPUT"
           echo "version_code=${COMPUTED_CODE}" >> "$GITHUB_OUTPUT"
           echo "tag_name=${TAG_NAME}" >> "$GITHUB_OUTPUT"
-          echo "Resolved Release: v${CLEAN_VER} (versionCode=${COMPUTED_CODE})"
+          echo "Automatic Release Version Resolved: ${TAG_NAME} (versionCode=${COMPUTED_CODE})"
 
       - name: Prepare Release Signing Keystore
         env:
@@ -150,7 +196,7 @@ jobs:
             echo "STORE_PASSWORD=${RELEASE_STORE_PASSWORD}" >> "$GITHUB_ENV"
             echo "KEY_PASSWORD=${RELEASE_KEY_PASSWORD}" >> "$GITHUB_ENV"
           else
-            echo "::warning::RELEASE_KEYSTORE_BASE64 secret is not configured. Generating an ephemeral release keystore for alias 'upload' so the build succeeds."
+            echo "::warning::RELEASE_KEYSTORE_BASE64 secret is not configured. Generating an ephemeral release keystore for alias 'upload' so the automatic release succeeds."
             EPHEMERAL_PASS="folio_release_pass_2026"
             keytool -genkeypair -v \
               -keystore "$KEYSTORE_FILE" \
@@ -215,13 +261,15 @@ jobs:
             dist/SHA256SUMS.txt
             dist/RELEASE_NOTES.md
 
-      - name: Publish Release to GitHub Releases
+      - name: Automatically Create Git Tag & Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.semver.outputs.tag_name }}
+          target_commitish: ${{ github.sha }}
           name: "Folio ${{ steps.semver.outputs.tag_name }} (Build ${{ steps.semver.outputs.version_code }})"
           body_path: dist/RELEASE_NOTES.md
           prerelease: ${{ github.event.inputs.prerelease == 'true' }}
+          make_latest: "true"
           generate_release_notes: false
           files: |
             dist/Folio-v${{ steps.semver.outputs.version_name }}-universal-release.apk
