@@ -1,6 +1,6 @@
 {
-  "summary":  "Implementation plan for Folio's automated GitHub Actions CI/CD & Android Release Pipeline, covering tag-triggered and manual workflow dispatch releases, dynamic semantic version injection, 100% offline manifest & APK verification gates, Robolectric & Lint testing, signed APK + AAB packaging with SHA-256 checksums, automated changelog generation, and an in-app Release & Integrity Verification card in Settings.",
-  "updatedAt":  "2026-10-28T14:16:18.617816550Z",
+  "summary":  "Implementation plan to resolve the GitHub Actions '4 tests completed, 1 failed' error in :app:testDebugUnitTest by upgrading the CI runtime to JDK 21 (required by Gradle 9.3.1, AGP 9.1.1, and Robolectric 4.16.1 Android SDK 36 bytecode), configuring JVM module opens and headless flags for Robolectric, and enabling FULL stack trace logging plus GitHub Actions Step Summary reporting.",
+  "updatedAt":  "2026-10-28T14:47:48.787751776Z",
   "requestFeedback":  true,
   "userFacing":  true
 }

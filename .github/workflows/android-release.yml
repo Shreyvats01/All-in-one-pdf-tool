@@ -31,11 +31,11 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Set up JDK 17
+      - name: Set up JDK 21 (Required by AGP 9 & Robolectric 4.16 SDK 36)
         uses: actions/setup-java@v4
         with:
           distribution: "temurin"
-          java-version: "17"
+          java-version: "21"
 
       - name: Setup Gradle & Cache
         uses: gradle/actions/setup-gradle@v4
@@ -60,7 +60,13 @@ jobs:
           bash scripts/verify_offline_release.sh
 
       - name: Run Unit & Robolectric Test Suite
-        run: gradle :app:testDebugUnitTest --stacktrace
+        run: gradle :app:testDebugUnitTest --info --stacktrace
+
+      - name: Publish JUnit Test Summary & Any Failure Stack Traces
+        if: always()
+        run: |
+          chmod +x scripts/report_test_summary.sh
+          bash scripts/report_test_summary.sh
 
       - name: Run Android Lint Verification
         run: gradle :app:lintDebug --stacktrace
@@ -77,11 +83,11 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Set up JDK 17
+      - name: Set up JDK 21
         uses: actions/setup-java@v4
         with:
           distribution: "temurin"
-          java-version: "17"
+          java-version: "21"
 
       - name: Setup Gradle & Cache
         uses: gradle/actions/setup-gradle@v4

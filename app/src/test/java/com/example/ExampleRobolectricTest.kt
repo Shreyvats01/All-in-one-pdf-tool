@@ -71,7 +71,7 @@ class ExampleRobolectricTest {
             inputFiles = listOf(pdf1, pdf2),
             config = ToolConfiguration()
         )
-        assertTrue(mergeResult.success)
+        assertTrue("Merge PDF failed: ${mergeResult.errorMessage}", mergeResult.success)
         assertEquals(3, mergeResult.pagesProcessed)
         assertEquals("Original file must remain untouched", origLength1, pdf1.length())
 
@@ -82,8 +82,8 @@ class ExampleRobolectricTest {
             inputFiles = listOf(File(mergeResult.primaryOutputPath)),
             config = ToolConfiguration(rotateDegrees = 90)
         )
-        assertTrue(rotateResult.success)
-        assertTrue(File(rotateResult.primaryOutputPath).exists())
+        assertTrue("Rotate PDF failed: ${rotateResult.errorMessage}", rotateResult.success)
+        assertTrue("Rotated output file must exist", File(rotateResult.primaryOutputPath).exists())
     }
 
     @Test
@@ -93,7 +93,7 @@ class ExampleRobolectricTest {
         plainFile.writeText("Confidential Offline Payload 2026")
 
         val encrypted = VaultCryptoManager.encryptFileToVault(context, plainFile, "1234")
-        assertTrue(encrypted.exists())
+        assertTrue("Encrypted vault file must exist", encrypted.exists())
 
         val decrypted = VaultCryptoManager.decryptVaultFileToTemp(context, encrypted, "txt", "1234")
         assertEquals("Confidential Offline Payload 2026", decrypted.readText())
@@ -104,7 +104,10 @@ class ExampleRobolectricTest {
         val context = ApplicationProvider.getApplicationContext<Context>()
         val report = com.example.ui.inspectRuntimeReleaseIntegrity(context)
 
-        assertTrue("Runtime offline audit must confirm strictly offline APK", report.isStrictlyOffline)
+        assertTrue(
+            "Runtime offline audit must confirm strictly offline APK (permissions=${report.requestedPermissions})",
+            report.isStrictlyOffline
+        )
         assertFalse(report.hasInternetPermission)
         assertFalse(report.hasNetworkStatePermission)
         assertTrue("Version name must be populated", report.versionName.isNotBlank())
