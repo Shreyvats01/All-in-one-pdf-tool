@@ -4,10 +4,12 @@ import android.app.Application
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.content.Context
+import android.content.Intent
 import android.net.Uri
 import android.os.Build
 import android.provider.OpenableColumns
 import androidx.core.app.NotificationCompat
+import androidx.documentfile.provider.DocumentFile
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.core.SampleSeedGenerator
@@ -34,6 +36,7 @@ import com.example.domain.model.ToolExecutionResult
 import com.example.reader.MultiFormatDocumentEngine
 import com.example.reader.ParsedDocumentSession
 import com.example.tools.PdfToolkitEngine
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -41,6 +44,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.FileOutputStream
 
@@ -128,14 +132,22 @@ class FolioViewModel(application: Application) : AndroidViewModel(application) {
     private val _lastTrashedDocument = MutableStateFlow<DocumentEntity?>(null)
     val lastTrashedDocument: StateFlow<DocumentEntity?> = _lastTrashedDocument.asStateFlow()
 
+    // Status message for file/folder imports
+    private val _statusMessage = MutableStateFlow<String?>(null)
+    val statusMessage: StateFlow<String?> = _statusMessage.asStateFlow()
+
     private val _storageBreakdown = MutableStateFlow(VaultCryptoManager.calculateStorageBreakdown(application))
     val storageBreakdown: StateFlow<VaultCryptoManager.StorageBreakdown> = _storageBreakdown.asStateFlow()
 
     init {
         viewModelScope.launch {
-            SampleSeedGenerator.seedIfNeeded(getApplication(), repository)
+            SampleSeedGenerator.initializeWorkspaceAndPurgeDummyFiles(getApplication(), repository)
             refreshStorageStats()
         }
+    }
+
+    fun clearStatusMessage() {
+        _statusMessage.value = null
     }
 
     fun selectTab(tab: MainTab) {
@@ -282,60 +294,137 @@ class FolioViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    // --- SAF File Import & Intent Handling ---
+    // --- SAF File & Folder Import (With Persistent User Permission Grants) ---
 
     fun importSafUri(uri: Uri, openImmediately: Boolean = false, launchTool: PdfToolId? = null) {
+        importMultipleSafUris(listOf(uri), openImmediately = openImmediately, launchTool = launchTool)
+    }
+
+    fun importMultipleSafUris(
+        uris: List<Uri>,
+        openImmediately: Boolean = false,
+        launchTool: PdfToolId? = null
+    ) {
+        if (uris.isEmpty()) return
         viewModelScope.launch {
             val context = getApplication<Application>()
-            val contentResolver = context.contentResolver
-            var displayName = "Imported_Document_${System.currentTimeMillis() % 10000}.pdf"
-            contentResolver.query(uri, null, null, null, null)?.use { cursor ->
-                val nameIdx = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
-                if (cursor.moveToFirst() && nameIdx >= 0) {
-                    displayName = cursor.getString(nameIdx) ?: displayName
+            val importedDocs = withContext(Dispatchers.IO) {
+                uris.mapNotNull { uri ->
+                    importSingleUriInternal(context, uri)
                 }
             }
-            val libDir = File(context.filesDir, "library").apply { mkdirs() }
-            val destFile = File(libDir, "${System.currentTimeMillis() % 100000}_$displayName")
-            runCatching {
-                contentResolver.openInputStream(uri)?.use { input ->
-                    FileOutputStream(destFile).use { output ->
-                        input.copyTo(output)
-                    }
-                }
-            }
-            if (!destFile.exists() || destFile.length() == 0L) return@launch
-
-            val session = MultiFormatDocumentEngine.openSession(context, destFile)
-            val format = DocumentFormat.fromFilename(displayName)
-            val newDoc = DocumentEntity(
-                displayName = displayName,
-                filePath = destFile.absolutePath,
-                uriString = uri.toString(),
-                formatName = format.name,
-                sizeBytes = destFile.length(),
-                pageCount = session.pageCount,
-                indexedContent = session.pagesText.take(10).joinToString(" ").take(2500)
-            )
-            val id = repository.upsertDocument(newDoc)
-            val savedDoc = newDoc.copy(id = id)
+            if (importedDocs.isEmpty()) return@launch
             refreshStorageStats()
 
             if (launchTool != null) {
-                startToolFlow(launchTool, listOf(savedDoc))
-            } else if (openImmediately) {
-                openDocument(savedDoc)
+                startToolFlow(launchTool, importedDocs)
+            } else if (_toolWizard.value != null) {
+                val current = _toolWizard.value!!
+                val updatedSelection = if (current.tool.acceptsMultipleFiles) {
+                    (current.selectedDocs + importedDocs).distinctBy { it.id }
+                } else {
+                    listOf(importedDocs.first())
+                }
+                _toolWizard.value = current.copy(selectedDocs = updatedSelection)
+                _statusMessage.value = "Added ${importedDocs.size} file(s) to ${current.tool.title}"
+            } else if (openImmediately && importedDocs.size == 1) {
+                openDocument(importedDocs.first())
             } else {
-                // If wizard is open on Step 1, append imported file to selection
-                _toolWizard.value?.let { current ->
-                    if (current.step == 1) {
-                        _toolWizard.value = current.copy(
-                            selectedDocs = (current.selectedDocs + savedDoc).distinctBy { it.id }
-                        )
+                _statusMessage.value = "Imported ${importedDocs.size} file(s) from device"
+            }
+        }
+    }
+
+    fun importSafFolderTree(treeUri: Uri) {
+        viewModelScope.launch {
+            val context = getApplication<Application>()
+            runCatching {
+                val takeFlags = Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+                context.contentResolver.takePersistableUriPermission(treeUri, takeFlags)
+            }
+            val importedCount = withContext(Dispatchers.IO) {
+                val rootDir = DocumentFile.fromTreeUri(context, treeUri) ?: return@withContext 0
+                val folderTitle = rootDir.name ?: "Connected Folder"
+                preferences.update {
+                    it.copy(
+                        customOutputFolderUri = treeUri.toString(),
+                        connectedFolderName = folderTitle
+                    )
+                }
+                val folderEntityId = repository.createFolder(folderTitle)
+                var count = 0
+                val supportedExts = setOf(
+                    "pdf", "epub", "docx", "doc", "xlsx", "xls", "pptx", "ppt",
+                    "odt", "txt", "md", "csv", "html", "htm", "rtf", "cbz", "jpg", "jpeg", "png", "webp"
+                )
+                rootDir.listFiles().take(40).forEach { docFile ->
+                    if (docFile.isFile) {
+                        val name = docFile.name ?: return@forEach
+                        val ext = name.substringAfterLast('.', "").lowercase()
+                        if (ext in supportedExts) {
+                            val imported = importSingleUriInternal(context, docFile.uri, preferredName = name, folderId = folderEntityId)
+                            if (imported != null) count++
+                        }
+                    }
+                }
+                count
+            }
+            refreshStorageStats()
+            _statusMessage.value = if (importedCount > 0) {
+                "Synced $importedCount file(s) from selected folder"
+            } else {
+                "Folder connected. Pick files or add documents to sync."
+            }
+        }
+    }
+
+    private suspend fun importSingleUriInternal(
+        context: Context,
+        uri: Uri,
+        preferredName: String? = null,
+        folderId: Long? = null
+    ): DocumentEntity? {
+        val contentResolver = context.contentResolver
+        runCatching {
+            contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+        var displayName = preferredName ?: "Document_${System.currentTimeMillis() % 10000}.pdf"
+        if (preferredName == null) {
+            runCatching {
+                contentResolver.query(uri, null, null, null, null)?.use { cursor ->
+                    val nameIdx = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                    if (cursor.moveToFirst() && nameIdx >= 0) {
+                        displayName = cursor.getString(nameIdx) ?: displayName
                     }
                 }
             }
         }
+        val safeFileName = displayName.replace(Regex("[^a-zA-Z0-9._\\- ]"), "_")
+        val libDir = File(context.filesDir, "library").apply { mkdirs() }
+        val destFile = File(libDir, "${System.currentTimeMillis() % 100000}_$safeFileName")
+        runCatching {
+            contentResolver.openInputStream(uri)?.use { input ->
+                FileOutputStream(destFile).use { output ->
+                    input.copyTo(output)
+                }
+            }
+        }
+        if (!destFile.exists() || destFile.length() == 0L) return null
+
+        val session = MultiFormatDocumentEngine.openSession(context, destFile)
+        val format = DocumentFormat.fromFilename(displayName)
+        val newDoc = DocumentEntity(
+            displayName = displayName,
+            filePath = destFile.absolutePath,
+            uriString = uri.toString(),
+            formatName = format.name,
+            sizeBytes = destFile.length(),
+            pageCount = session.pageCount.coerceAtLeast(1),
+            folderId = folderId,
+            indexedContent = session.pagesText.take(10).joinToString(" ").take(2500)
+        )
+        val id = repository.upsertDocument(newDoc)
+        return newDoc.copy(id = id)
     }
 
     fun exportFileToSafUri(sourcePath: String, targetUri: Uri) {
@@ -347,6 +436,7 @@ class FolioViewModel(application: Application) : AndroidViewModel(application) {
                 context.contentResolver.openOutputStream(targetUri)?.use { out ->
                     src.inputStream().use { input -> input.copyTo(out) }
                 }
+                _statusMessage.value = "Saved ${src.name} to device storage"
             }
         }
     }
@@ -367,12 +457,36 @@ class FolioViewModel(application: Application) : AndroidViewModel(application) {
         val clean = newName.trim()
         if (clean.isBlank()) return
         viewModelScope.launch {
-            val finalName = if (clean.contains(".")) clean else "$clean.${doc.formatName.lowercase()}"
+            val ext = doc.displayName.substringAfterLast('.', doc.formatName.lowercase())
+            val finalName = if (clean.contains(".")) clean else "$clean.$ext"
             val updated = doc.copy(displayName = finalName)
             repository.updateDocument(updated)
             if (_activeDocument.value?.id == doc.id) {
                 _activeDocument.value = updated
             }
+        }
+    }
+
+    fun renameFileOnDiskAndDb(filePath: String, newName: String) {
+        val clean = newName.trim()
+        if (clean.isBlank()) return
+        viewModelScope.launch {
+            val existing = repository.getDocumentByPath(filePath)
+            if (existing != null) {
+                renameDocument(existing, clean)
+            }
+        }
+    }
+
+    fun saveSignature(label: String, typedText: String, strokePointsJson: String) {
+        viewModelScope.launch {
+            repository.saveSignature(
+                SignatureEntity(
+                    label = label.ifBlank { "Signature" },
+                    typedText = typedText.ifBlank { "Signed via Folio" },
+                    strokePointsJson = strokePointsJson
+                )
+            )
         }
     }
 
@@ -466,6 +580,7 @@ class FolioViewModel(application: Application) : AndroidViewModel(application) {
 
     fun deletePermanently(doc: DocumentEntity) {
         viewModelScope.launch {
+            runCatching { File(doc.filePath).delete() }
             repository.deletePermanently(doc.id)
             refreshStorageStats()
         }
@@ -486,20 +601,15 @@ class FolioViewModel(application: Application) : AndroidViewModel(application) {
             _showScannerScreen.value = true
             return
         }
-        val initialDocs = if (preselectedDocs.isNotEmpty()) {
-            preselectedDocs
-        } else {
-            libraryDocuments.value.take(if (tool.acceptsMultipleFiles) 2 else 1)
-        }
-        val defaultOrder = if (initialDocs.isNotEmpty()) {
-            (0 until initialDocs.first().pageCount.coerceAtLeast(1)).toList()
+        val defaultOrder = if (preselectedDocs.isNotEmpty()) {
+            (0 until preselectedDocs.first().pageCount.coerceAtLeast(1)).toList()
         } else {
             emptyList()
         }
         _toolWizard.value = ActiveToolWizardState(
             tool = tool,
             step = if (preselectedDocs.isNotEmpty()) 2 else 1,
-            selectedDocs = initialDocs,
+            selectedDocs = preselectedDocs,
             config = ToolConfiguration(customPageOrder = defaultOrder)
         )
     }
@@ -557,6 +667,15 @@ class FolioViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun removeWizardFileAt(index: Int) {
+        val current = _toolWizard.value ?: return
+        val mutable = current.selectedDocs.toMutableList()
+        if (index in mutable.indices) {
+            mutable.removeAt(index)
+            _toolWizard.value = current.copy(selectedDocs = mutable)
+        }
+    }
+
     fun updateWizardStep(step: Int) {
         val current = _toolWizard.value ?: return
         _toolWizard.value = current.copy(step = step.coerceIn(1, 3))
@@ -569,11 +688,10 @@ class FolioViewModel(application: Application) : AndroidViewModel(application) {
 
     fun applyToolPreset(preset: ToolPresetEntity) {
         val tool = runCatching { PdfToolId.valueOf(preset.toolIdName) }.getOrDefault(PdfToolId.COMPRESS_PDF)
-        val initialDocs = libraryDocuments.value.take(if (tool.acceptsMultipleFiles) 2 else 1)
         _toolWizard.value = ActiveToolWizardState(
             tool = tool,
-            step = 2,
-            selectedDocs = initialDocs,
+            step = 1,
+            selectedDocs = emptyList(),
             config = ToolConfiguration()
         )
     }

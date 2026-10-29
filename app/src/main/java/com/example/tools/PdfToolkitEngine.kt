@@ -66,44 +66,51 @@ object PdfToolkitEngine {
         }
 
         val outDir = File(context.filesDir, "outputs").apply { mkdirs() }
+        val scratchDir = File(context.cacheDir, "job_scratch").apply { mkdirs() }
         val firstFile = inputFiles.first()
         val totalOriginalBytes = inputFiles.sumOf { if (it.exists()) it.length() else 0L }
 
         try {
+            val normalizedInputs = when (tool) {
+                PdfToolId.SCAN_TO_PDF, PdfToolId.IMAGE_TO_PDF, PdfToolId.OFFICE_TO_PDF, PdfToolId.TEXT_WEB_TO_PDF -> inputFiles
+                else -> ensurePdfFiles(context, inputFiles, scratchDir, config, onProgress)
+            }
+            val normalizedFirst = normalizedInputs.first()
+
             when (tool) {
-                PdfToolId.MERGE_PDF -> mergePdfs(inputFiles, outDir, config, outputPattern, onProgress)
-                PdfToolId.SPLIT_PDF -> splitPdf(firstFile, outDir, config, onProgress)
-                PdfToolId.REMOVE_PAGES -> filterPagesPdf(firstFile, outDir, config, removeMatched = true, outputPattern, onProgress)
-                PdfToolId.EXTRACT_PAGES -> filterPagesPdf(firstFile, outDir, config, removeMatched = false, outputPattern, onProgress)
-                PdfToolId.ORGANIZE_PAGES -> organizePagesPdf(firstFile, outDir, config, outputPattern, onProgress)
+                PdfToolId.MERGE_PDF -> mergePdfs(normalizedInputs, outDir, config, outputPattern, onProgress)
+                PdfToolId.SPLIT_PDF -> splitPdf(normalizedFirst, outDir, config, onProgress)
+                PdfToolId.REMOVE_PAGES -> filterPagesPdf(normalizedFirst, outDir, config, removeMatched = true, outputPattern, onProgress)
+                PdfToolId.EXTRACT_PAGES -> filterPagesPdf(normalizedFirst, outDir, config, removeMatched = false, outputPattern, onProgress)
+                PdfToolId.ORGANIZE_PAGES -> organizePagesPdf(normalizedFirst, outDir, config, outputPattern, onProgress)
                 PdfToolId.SCAN_TO_PDF, PdfToolId.IMAGE_TO_PDF -> PdfToolkitConversions.imagesToPdf(context, inputFiles, outDir, config, tool, outputPattern, onProgress)
-                PdfToolId.COMPRESS_PDF -> compressPdf(context, firstFile, outDir, config, outputPattern, onProgress)
-                PdfToolId.REPAIR_PDF -> repairPdf(firstFile, outDir, outputPattern, onProgress)
-                PdfToolId.OCR_PDF -> PdfToolkitConversions.ocrPdfOffline(context, firstFile, outDir, config, outputPattern, onProgress)
+                PdfToolId.COMPRESS_PDF -> compressPdf(context, normalizedFirst, outDir, config, outputPattern, onProgress)
+                PdfToolId.REPAIR_PDF -> repairPdf(normalizedFirst, outDir, outputPattern, onProgress)
+                PdfToolId.OCR_PDF -> PdfToolkitConversions.ocrPdfOffline(context, normalizedFirst, outDir, config, outputPattern, onProgress)
                 PdfToolId.OFFICE_TO_PDF, PdfToolId.TEXT_WEB_TO_PDF -> PdfToolkitConversions.convertAnyToPdf(context, inputFiles, outDir, config, tool, outputPattern, onProgress)
-                PdfToolId.PDF_TO_IMAGE -> PdfToolkitConversions.pdfToImages(context, firstFile, outDir, config, onProgress)
-                PdfToolId.PDF_TO_OFFICE -> PdfToolkitConversions.pdfToOffice(firstFile, outDir, config, onProgress)
-                PdfToolId.PDF_TO_TEXT_MARKUP, PdfToolId.EXTRACT_TEXT -> PdfToolkitConversions.pdfToTextMarkup(firstFile, outDir, config, tool, onProgress)
-                PdfToolId.PDF_TO_PDFA -> convertToPdfA(firstFile, outDir, outputPattern, onProgress)
-                PdfToolId.EXTRACT_IMAGES -> PdfToolkitConversions.extractEmbeddedImages(context, firstFile, outDir, onProgress)
+                PdfToolId.PDF_TO_IMAGE -> PdfToolkitConversions.pdfToImages(context, normalizedFirst, outDir, config, onProgress)
+                PdfToolId.PDF_TO_OFFICE -> PdfToolkitConversions.pdfToOffice(normalizedFirst, outDir, config, onProgress)
+                PdfToolId.PDF_TO_TEXT_MARKUP, PdfToolId.EXTRACT_TEXT -> PdfToolkitConversions.pdfToTextMarkup(normalizedFirst, outDir, config, tool, onProgress)
+                PdfToolId.PDF_TO_PDFA -> convertToPdfA(normalizedFirst, outDir, outputPattern, onProgress)
+                PdfToolId.EXTRACT_IMAGES -> PdfToolkitConversions.extractEmbeddedImages(context, normalizedFirst, outDir, onProgress)
                 PdfToolId.ANNOTATE_MARKUP, PdfToolId.STAMPS, PdfToolId.FORM_FILL, PdfToolId.EDIT_PDF_CONTENT ->
-                    applyAnnotationsAndEdits(firstFile, outDir, tool, config, annotations, outputPattern, onProgress)
-                PdfToolId.ROTATE_PDF -> rotatePdf(firstFile, outDir, config, outputPattern, onProgress)
-                PdfToolId.ADD_PAGE_NUMBERS -> addPageNumbersPdf(firstFile, outDir, config, outputPattern, onProgress)
-                PdfToolId.WATERMARK_PDF -> watermarkPdf(firstFile, outDir, config, outputPattern, onProgress)
-                PdfToolId.HEADER_FOOTER -> headerFooterPdf(firstFile, outDir, config, outputPattern, onProgress)
-                PdfToolId.CROP_PDF -> cropPdf(firstFile, outDir, config, outputPattern, onProgress)
-                PdfToolId.RESIZE_NUP_BOOKLET -> resizeOrNUpPdf(context, firstFile, outDir, config, outputPattern, onProgress)
-                PdfToolId.REMOVE_BLANK_PAGES -> removeBlankPagesPdf(firstFile, outDir, config, outputPattern, onProgress)
-                PdfToolId.GRAYSCALE_BW -> grayscalePdf(context, firstFile, outDir, config, outputPattern, onProgress)
-                PdfToolId.EDIT_METADATA -> editMetadataPdf(firstFile, outDir, config, outputPattern, onProgress)
-                PdfToolId.FLATTEN_PDF -> flattenPdf(firstFile, outDir, annotations, outputPattern, onProgress)
-                PdfToolId.PROTECT_PDF -> protectPdf(firstFile, outDir, config, outputPattern, onProgress)
-                PdfToolId.UNLOCK_PDF -> unlockPdf(firstFile, outDir, config, outputPattern, onProgress)
-                PdfToolId.SIGN_PDF -> signPdf(firstFile, outDir, config, outputPattern, onProgress)
-                PdfToolId.REDACT_PDF -> redactPdf(context, firstFile, outDir, config, outputPattern, onProgress)
-                PdfToolId.COMPARE_PDF -> comparePdfs(inputFiles, outDir, outputPattern, onProgress)
-                PdfToolId.BATCH_PROCESSOR -> runBatchProcessor(context, inputFiles, outDir, config, outputPattern, onProgress)
+                    applyAnnotationsAndEdits(normalizedFirst, outDir, tool, config, annotations, outputPattern, onProgress)
+                PdfToolId.ROTATE_PDF -> rotatePdf(normalizedFirst, outDir, config, outputPattern, onProgress)
+                PdfToolId.ADD_PAGE_NUMBERS -> addPageNumbersPdf(normalizedFirst, outDir, config, outputPattern, onProgress)
+                PdfToolId.WATERMARK_PDF -> watermarkPdf(normalizedFirst, outDir, config, outputPattern, onProgress)
+                PdfToolId.HEADER_FOOTER -> headerFooterPdf(normalizedFirst, outDir, config, outputPattern, onProgress)
+                PdfToolId.CROP_PDF -> cropPdf(normalizedFirst, outDir, config, outputPattern, onProgress)
+                PdfToolId.RESIZE_NUP_BOOKLET -> resizeOrNUpPdf(context, normalizedFirst, outDir, config, outputPattern, onProgress)
+                PdfToolId.REMOVE_BLANK_PAGES -> removeBlankPagesPdf(normalizedFirst, outDir, config, outputPattern, onProgress)
+                PdfToolId.GRAYSCALE_BW -> grayscalePdf(context, normalizedFirst, outDir, config, outputPattern, onProgress)
+                PdfToolId.EDIT_METADATA -> editMetadataPdf(normalizedFirst, outDir, config, outputPattern, onProgress)
+                PdfToolId.FLATTEN_PDF -> flattenPdf(normalizedFirst, outDir, annotations, outputPattern, onProgress)
+                PdfToolId.PROTECT_PDF -> protectPdf(normalizedFirst, outDir, config, outputPattern, onProgress)
+                PdfToolId.UNLOCK_PDF -> unlockPdf(normalizedFirst, outDir, config, outputPattern, onProgress)
+                PdfToolId.SIGN_PDF -> signPdf(normalizedFirst, outDir, config, outputPattern, onProgress)
+                PdfToolId.REDACT_PDF -> redactPdf(context, normalizedFirst, outDir, config, outputPattern, onProgress)
+                PdfToolId.COMPARE_PDF -> comparePdfs(normalizedInputs, outDir, outputPattern, onProgress)
+                PdfToolId.BATCH_PROCESSOR -> runBatchProcessor(context, normalizedInputs, outDir, config, outputPattern, onProgress)
             }
         } catch (e: Exception) {
             val isPassword = e.message?.contains("password", ignoreCase = true) == true ||
@@ -127,6 +134,58 @@ object PdfToolkitEngine {
             // Auto-clean temporary scratch files after each job
             File(context.cacheDir, "job_scratch").deleteRecursively()
         }
+    }
+
+    private suspend fun ensurePdfFiles(
+        context: Context,
+        files: List<File>,
+        scratchDir: File,
+        config: ToolConfiguration,
+        onProgress: (Int, String) -> Unit
+    ): List<File> {
+        return files.map { file ->
+            if (isValidPdfFile(file)) {
+                file
+            } else {
+                onProgress(10, "Auto-converting ${file.name} to PDF...")
+                val format = com.example.domain.model.DocumentFormat.fromFilename(file.name)
+                val convRes = if (format == com.example.domain.model.DocumentFormat.IMAGE) {
+                    PdfToolkitConversions.imagesToPdf(
+                        context = context,
+                        inputFiles = listOf(file),
+                        outDir = scratchDir,
+                        config = config,
+                        tool = PdfToolId.IMAGE_TO_PDF,
+                        pattern = "{name}_{tool}",
+                        onProgress = { _, _ -> }
+                    )
+                } else {
+                    PdfToolkitConversions.convertAnyToPdf(
+                        context = context,
+                        inputFiles = listOf(file),
+                        outDir = scratchDir,
+                        config = config,
+                        tool = PdfToolId.OFFICE_TO_PDF,
+                        pattern = "{name}_{tool}",
+                        onProgress = { _, _ -> }
+                    )
+                }
+                if (convRes.success && convRes.primaryOutputPath.isNotEmpty()) {
+                    File(convRes.primaryOutputPath)
+                } else {
+                    file
+                }
+            }
+        }
+    }
+
+    private fun isValidPdfFile(file: File): Boolean {
+        if (!file.exists() || file.length() < 5L) return false
+        return runCatching {
+            val header = ByteArray(5)
+            file.inputStream().use { it.read(header) }
+            String(header, Charsets.US_ASCII).startsWith("%PDF")
+        }.getOrDefault(false)
     }
 
     fun buildOutputFile(outDir: File, baseName: String, suffix: String, ext: String, pattern: String): File {

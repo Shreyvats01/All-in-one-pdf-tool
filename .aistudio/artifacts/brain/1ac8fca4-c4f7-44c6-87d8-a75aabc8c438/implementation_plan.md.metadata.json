@@ -1,6 +1,6 @@
 {
-  "summary":  "Implementation plan to fix the 'App not installed as package appears to be invalid' error on fresh APK installs from GitHub Releases by disabling configuration-cache poisoning of release signing variables, adding a dedicated Android SDK zipalign + apksigner (V1+V2+V3) signing and verification script, setting extractNativeLibs=true in AndroidManifest.xml, using a deterministic fallback keystore across releases, and streamlining the pipeline to publish only the verified Universal APK and SHA-256 checksums.",
-  "updatedAt":  "2026-10-29T01:46:56.500028392Z",
+  "summary":  "Complete UI/UX overhaul and functional engineering plan for Folio: fixes all container misalignments and text clipping, replaces the broken bottom bar with a standard Material 3 NavigationBar, removes all temporary dummy seed data in favor of real Android SAF file/folder permissions, adds automatic non-PDF-to-PDF conversion across all 31 tools, and introduces dedicated visual workspaces for Scan, Merge, Sign, and Split/Organize.",
+  "updatedAt":  "2026-10-29T13:59:16.423553441Z",
   "requestFeedback":  true,
   "userFacing":  true
 }

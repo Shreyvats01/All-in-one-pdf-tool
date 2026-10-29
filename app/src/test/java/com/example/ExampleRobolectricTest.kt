@@ -113,5 +113,39 @@ class ExampleRobolectricTest {
         assertTrue("Version name must be populated", report.versionName.isNotBlank())
         assertTrue("Version code must be >= 1", report.versionCode >= 1)
     }
+
+    @Test
+    fun verifyNonPdfAutoConversionInMergeAndSignTools() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        SampleSeedGenerator.ensurePdfBoxInitialized(context)
+
+        val tempDir = File(context.cacheDir, "test_mixed_formats").apply { mkdirs() }
+        val mdFile = File(tempDir, "notes.md").apply {
+            writeText("# Project Summary\n\nAll non-PDF files auto-convert cleanly.")
+        }
+        val csvFile = File(tempDir, "budget.csv").apply {
+            writeText("Department,Allocation\nEngineering,120000\nDesign,85000")
+        }
+
+        // Merge a Markdown and CSV file directly in MERGE_PDF
+        val mergeResult = PdfToolkitEngine.executeTool(
+            context = context,
+            tool = PdfToolId.MERGE_PDF,
+            inputFiles = listOf(mdFile, csvFile),
+            config = ToolConfiguration()
+        )
+        assertTrue("Merging .md and .csv must succeed via auto-conversion: ${mergeResult.errorMessage}", mergeResult.success)
+        assertTrue("Merged PDF output must exist", File(mergeResult.primaryOutputPath).exists())
+
+        // Sign a Markdown file directly in SIGN_PDF
+        val signResult = PdfToolkitEngine.executeTool(
+            context = context,
+            tool = PdfToolId.SIGN_PDF,
+            inputFiles = listOf(mdFile),
+            config = ToolConfiguration(signatureText = "Approved by User")
+        )
+        assertTrue("Signing .md file must succeed via auto-conversion: ${signResult.errorMessage}", signResult.success)
+        assertTrue("Signed PDF output must exist", File(signResult.primaryOutputPath).exists())
+    }
 }
 

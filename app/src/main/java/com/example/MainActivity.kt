@@ -11,24 +11,17 @@ import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.biometric.BiometricPrompt
-import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.isSystemInDarkTheme
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.widthIn
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Build
 import androidx.compose.material.icons.filled.Folder
@@ -40,6 +33,9 @@ import androidx.compose.material.icons.outlined.Home
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.NavigationBar
+import androidx.compose.material3.NavigationBarItem
+import androidx.compose.material3.NavigationBarItemDefaults
 import androidx.compose.material3.NavigationRail
 import androidx.compose.material3.NavigationRailItem
 import androidx.compose.material3.Scaffold
@@ -58,11 +54,10 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Brush
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.fragment.app.FragmentActivity
@@ -216,16 +211,37 @@ fun FolioAppRoot(
     val toolWizard by viewModel.toolWizard.collectAsStateWithLifecycle()
     val showScanner by viewModel.showScannerScreen.collectAsStateWithLifecycle()
     val lastTrashed by viewModel.lastTrashedDocument.collectAsStateWithLifecycle()
+    val statusMessage by viewModel.statusMessage.collectAsStateWithLifecycle()
 
     val snackbarHostState = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
 
-    val safOpenDocumentLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.OpenDocument()
-    ) { uri ->
-        if (uri != null) {
-            viewModel.importSafUri(uri, openImmediately = true)
+    // Multi-file SAF Picker (allows picking 1 or more files with persistent read permission)
+    val safMultiDocumentLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenMultipleDocuments()
+    ) { uris ->
+        if (uris.isNotEmpty()) {
+            viewModel.importMultipleSafUris(uris, openImmediately = uris.size == 1)
         }
+    }
+
+    // Folder Tree SAF Picker (allows granting persistent directory access)
+    val safFolderTreeLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocumentTree()
+    ) { treeUri ->
+        if (treeUri != null) {
+            viewModel.importSafFolderTree(treeUri)
+        }
+    }
+
+    // Status message feedback
+    LaunchedEffect(statusMessage) {
+        val msg = statusMessage ?: return@LaunchedEffect
+        snackbarHostState.showSnackbar(
+            message = msg,
+            duration = SnackbarDuration.Short
+        )
+        viewModel.clearStatusMessage()
     }
 
     // Snackbar Undo when a document is moved to Trash
@@ -266,7 +282,7 @@ fun FolioAppRoot(
         return
     }
 
-    // 1. First-run 3-screen swipeable Onboarding (skippable)
+    // 1. Optional Onboarding
     if (!settings.onboardingCompleted) {
         OnboardingOverlay(
             onComplete = {
@@ -323,157 +339,171 @@ fun FolioAppRoot(
         return
     }
 
-    // 5. Adaptive Main Workspace Shell (NavigationRail on Wide Tablets/Landscape, Floating Bottom Pill Bar on Phones)
+    // 5. Adaptive Main Workspace Shell (NavigationRail on Wide Tablets, Standard M3 NavigationBar on Phones)
     BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
         val isWideScreen = maxWidth >= 640.dp
 
         Scaffold(
             snackbarHost = { SnackbarHost(snackbarHostState) },
-            containerColor = MaterialTheme.colorScheme.background
-        ) { innerPadding ->
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(top = innerPadding.calculateTopPadding())
-            ) {
-                Row(modifier = Modifier.fillMaxSize()) {
-                    if (isWideScreen) {
-                        NavigationRail(
-                            containerColor = MaterialTheme.colorScheme.surface,
-                            modifier = Modifier.fillMaxHeight().statusBarsPadding()
-                        ) {
-                            Spacer(Modifier.height(16.dp))
-                            NavTabItem.entries.forEach { item ->
-                                val selected = currentTab == item.tab
-                                NavigationRailItem(
-                                    selected = selected,
-                                    onClick = { viewModel.selectTab(item.tab) },
-                                    icon = {
-                                        Icon(
-                                            if (selected) item.filledIcon else item.outlinedIcon,
-                                            contentDescription = item.label
-                                        )
-                                    },
-                                    label = { Text(item.label) },
-                                    modifier = Modifier.testTag("nav_tab_${item.tab.name.lowercase()}")
-                                )
-                            }
+            containerColor = MaterialTheme.colorScheme.background,
+            bottomBar = {
+                if (!isWideScreen) {
+                    NavigationBar(
+                        containerColor = MaterialTheme.colorScheme.surface,
+                        tonalElevation = 3.dp
+                    ) {
+                        NavTabItem.entries.forEach { item ->
+                            val selected = currentTab == item.tab
+                            NavigationBarItem(
+                                selected = selected,
+                                onClick = { viewModel.selectTab(item.tab) },
+                                icon = {
+                                    Icon(
+                                        imageVector = if (selected) item.filledIcon else item.outlinedIcon,
+                                        contentDescription = item.label
+                                    )
+                                },
+                                label = {
+                                    Text(
+                                        text = item.label,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                        fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal
+                                    )
+                                },
+                                alwaysShowLabel = true,
+                                colors = NavigationBarItemDefaults.colors(
+                                    selectedIconColor = MaterialTheme.colorScheme.onPrimaryContainer,
+                                    selectedTextColor = MaterialTheme.colorScheme.primary,
+                                    indicatorColor = MaterialTheme.colorScheme.primaryContainer,
+                                    unselectedIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    unselectedTextColor = MaterialTheme.colorScheme.onSurfaceVariant
+                                ),
+                                modifier = Modifier.testTag("nav_tab_${item.tab.name.lowercase()}")
+                            )
                         }
                     }
-
-                    Box(
-                        modifier = Modifier
-                            .weight(1f)
-                            .fillMaxHeight(),
-                        contentAlignment = Alignment.TopCenter
+                }
+            }
+        ) { innerPadding ->
+            Row(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(innerPadding)
+            ) {
+                if (isWideScreen) {
+                    NavigationRail(
+                        containerColor = MaterialTheme.colorScheme.surface,
+                        modifier = Modifier.fillMaxHeight().statusBarsPadding()
                     ) {
-                        Box(modifier = Modifier.widthIn(max = 920.dp).fillMaxSize()) {
-                            when (currentTab) {
-                                MainTab.HOME -> HomeScreen(
-                                    documents = libraryDocs,
-                                    favourites = favouriteDocs,
-                                    searchHistory = settings.searchHistory,
-                                    onOpenDocument = { viewModel.openDocument(it) },
-                                    onToggleFavourite = { viewModel.toggleFavourite(it) },
-                                    onDeleteDocument = { viewModel.moveToTrash(it) },
-                                    onQuickToolClick = { toolId -> viewModel.startToolFlow(toolId) },
-                                    onPickSafFile = { safOpenDocumentLauncher.launch(arrayOf("*/*")) },
-                                    onRecordSearch = { q -> viewModel.preferences.recordSearchQuery(q) }
-                                )
-
-                                MainTab.TOOLS -> ToolsScreen(
-                                    recentToolIds = settings.recentToolIds,
-                                    presets = presets,
-                                    jobs = batchJobs,
-                                    onSelectTool = { toolId -> viewModel.startToolFlow(toolId) },
-                                    onSelectPreset = { preset -> viewModel.applyToolPreset(preset) },
-                                    onDeletePreset = { id ->
-                                        scope.launch { viewModel.repository.deletePreset(id) }
-                                    },
-                                    onRetryJob = { job -> viewModel.retryBatchJob(job) },
-                                    onClearJobs = {
-                                        scope.launch { viewModel.repository.clearFinishedJobs() }
-                                    }
-                                )
-
-                                MainTab.FILES -> FilesScreen(
-                                    libraryDocs = libraryDocs,
-                                    vaultDocs = vaultDocs,
-                                    trashedDocs = trashedDocs,
-                                    folders = folders,
-                                    tags = tags,
-                                    appLockPin = settings.appLockPin,
-                                    onOpenDocument = { viewModel.openDocument(it) },
-                                    onPickSafFile = { safOpenDocumentLauncher.launch(arrayOf("*/*")) },
-                                    onCreateFolder = { name ->
-                                        scope.launch { viewModel.repository.createFolder(name) }
-                                    },
-                                    onCreateTag = { name ->
-                                        scope.launch { viewModel.repository.createTag(name) }
-                                    },
-                                    onRenameDoc = { doc, newName -> viewModel.renameDocument(doc, newName) },
-                                    onDuplicateDoc = { doc -> viewModel.duplicateDocument(doc) },
-                                    onAssignFolderAndTags = { doc, fId, tagsCsv ->
-                                        viewModel.assignFolderAndTags(doc, fId, tagsCsv)
-                                    },
-                                    onMoveToVault = { doc -> viewModel.moveDocumentToVault(doc) },
-                                    onRestoreFromVault = { doc -> viewModel.restoreDocumentFromVault(doc) },
-                                    onMoveToTrash = { doc -> viewModel.moveToTrash(doc) },
-                                    onRestoreFromTrash = { doc -> viewModel.restoreFromTrash(doc) },
-                                    onDeletePermanently = { doc -> viewModel.deletePermanently(doc) },
-                                    onEmptyTrash = { viewModel.emptyTrash() },
-                                    onRequestBiometricUnlock = onRequestBiometricAuth
-                                )
-
-                                MainTab.SETTINGS -> SettingsScreen(
-                                    settings = settings,
-                                    storageBreakdown = storageBreakdown,
-                                    signatures = signatures,
-                                    onUpdateSettings = { transform -> viewModel.preferences.update(transform) },
-                                    onAddSignature = { sigText ->
-                                        scope.launch {
-                                            viewModel.repository.saveSignature(
-                                                SignatureEntity(
-                                                    label = "Saved Signature",
-                                                    typedText = sigText
-                                                )
-                                            )
-                                        }
-                                    },
-                                    onDeleteSignature = { id ->
-                                        scope.launch { viewModel.repository.deleteSignature(id) }
-                                    },
-                                    onClearCache = { viewModel.clearCacheAndTemp() }
-                                )
-                            }
+                        Spacer(Modifier.height(16.dp))
+                        NavTabItem.entries.forEach { item ->
+                            val selected = currentTab == item.tab
+                            NavigationRailItem(
+                                selected = selected,
+                                onClick = { viewModel.selectTab(item.tab) },
+                                icon = {
+                                    Icon(
+                                        if (selected) item.filledIcon else item.outlinedIcon,
+                                        contentDescription = item.label
+                                    )
+                                },
+                                label = { Text(item.label, maxLines = 1) },
+                                modifier = Modifier.testTag("nav_tab_${item.tab.name.lowercase()}")
+                            )
                         }
                     }
                 }
 
-                // Floating Bottom Bar for Handheld Phones with Soft Editorial Bottom Scrim
-                if (!isWideScreen) {
-                    val bgColor = MaterialTheme.colorScheme.background
-                    Box(
-                        modifier = Modifier
-                            .align(Alignment.BottomCenter)
-                            .fillMaxWidth()
-                            .background(
-                                Brush.verticalGradient(
-                                    colors = listOf(
-                                        Color.Transparent,
-                                        bgColor.copy(alpha = 0.85f),
-                                        bgColor
-                                    )
-                                )
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxHeight(),
+                    contentAlignment = Alignment.TopCenter
+                ) {
+                    Box(modifier = Modifier.widthIn(max = 920.dp).fillMaxSize()) {
+                        when (currentTab) {
+                            MainTab.HOME -> HomeScreen(
+                                documents = libraryDocs,
+                                favourites = favouriteDocs,
+                                searchHistory = settings.searchHistory,
+                                connectedFolderName = settings.connectedFolderName,
+                                onOpenDocument = { viewModel.openDocument(it) },
+                                onToggleFavourite = { viewModel.toggleFavourite(it) },
+                                onDeleteDocument = { viewModel.moveToTrash(it) },
+                                onQuickToolClick = { toolId -> viewModel.startToolFlow(toolId) },
+                                onPickSafFile = { safMultiDocumentLauncher.launch(arrayOf("*/*")) },
+                                onConnectFolder = { safFolderTreeLauncher.launch(null) },
+                                onRecordSearch = { q -> viewModel.preferences.recordSearchQuery(q) }
                             )
-                    ) {
-                        FloatingBottomNavigationBar(
-                            currentTab = currentTab,
-                            onSelectTab = { viewModel.selectTab(it) },
-                            modifier = Modifier
-                                .navigationBarsPadding()
-                                .padding(horizontal = 20.dp, vertical = 12.dp)
-                        )
+
+                            MainTab.TOOLS -> ToolsScreen(
+                                recentToolIds = settings.recentToolIds,
+                                presets = presets,
+                                jobs = batchJobs,
+                                onSelectTool = { toolId -> viewModel.startToolFlow(toolId) },
+                                onSelectPreset = { preset -> viewModel.applyToolPreset(preset) },
+                                onDeletePreset = { id ->
+                                    scope.launch { viewModel.repository.deletePreset(id) }
+                                },
+                                onRetryJob = { job -> viewModel.retryBatchJob(job) },
+                                onClearJobs = {
+                                    scope.launch { viewModel.repository.clearFinishedJobs() }
+                                }
+                            )
+
+                            MainTab.FILES -> FilesScreen(
+                                libraryDocs = libraryDocs,
+                                vaultDocs = vaultDocs,
+                                trashedDocs = trashedDocs,
+                                folders = folders,
+                                tags = tags,
+                                appLockPin = settings.appLockPin,
+                                connectedFolderName = settings.connectedFolderName,
+                                onOpenDocument = { viewModel.openDocument(it) },
+                                onPickSafFile = { safMultiDocumentLauncher.launch(arrayOf("*/*")) },
+                                onConnectFolder = { safFolderTreeLauncher.launch(null) },
+                                onCreateFolder = { name ->
+                                    scope.launch { viewModel.repository.createFolder(name) }
+                                },
+                                onCreateTag = { name ->
+                                    scope.launch { viewModel.repository.createTag(name) }
+                                },
+                                onRenameDoc = { doc, newName -> viewModel.renameDocument(doc, newName) },
+                                onDuplicateDoc = { doc -> viewModel.duplicateDocument(doc) },
+                                onAssignFolderAndTags = { doc, fId, tagsCsv ->
+                                    viewModel.assignFolderAndTags(doc, fId, tagsCsv)
+                                },
+                                onMoveToVault = { doc -> viewModel.moveDocumentToVault(doc) },
+                                onRestoreFromVault = { doc -> viewModel.restoreDocumentFromVault(doc) },
+                                onMoveToTrash = { doc -> viewModel.moveToTrash(doc) },
+                                onRestoreFromTrash = { doc -> viewModel.restoreFromTrash(doc) },
+                                onDeletePermanently = { doc -> viewModel.deletePermanently(doc) },
+                                onEmptyTrash = { viewModel.emptyTrash() },
+                                onRequestBiometricUnlock = onRequestBiometricAuth
+                            )
+
+                            MainTab.SETTINGS -> SettingsScreen(
+                                settings = settings,
+                                storageBreakdown = storageBreakdown,
+                                signatures = signatures,
+                                onUpdateSettings = { transform -> viewModel.preferences.update(transform) },
+                                onAddSignature = { sigText ->
+                                    scope.launch {
+                                        viewModel.repository.saveSignature(
+                                            SignatureEntity(
+                                                label = "Saved Signature",
+                                                typedText = sigText
+                                            )
+                                        )
+                                    }
+                                },
+                                onDeleteSignature = { id ->
+                                    scope.launch { viewModel.repository.deleteSignature(id) }
+                                },
+                                onClearCache = { viewModel.clearCacheAndTemp() }
+                            )
+                        }
                     }
                 }
             }
@@ -491,57 +521,4 @@ private enum class NavTabItem(
     TOOLS(MainTab.TOOLS, "Tools", Icons.Outlined.Build, Icons.Filled.Build),
     FILES(MainTab.FILES, "Files", Icons.Outlined.Folder, Icons.Filled.Folder),
     SETTINGS(MainTab.SETTINGS, "Settings", Icons.Outlined.Settings, Icons.Filled.Settings)
-}
-
-@Composable
-private fun FloatingBottomNavigationBar(
-    currentTab: MainTab,
-    onSelectTab: (MainTab) -> Unit,
-    modifier: Modifier = Modifier
-) {
-    Surface(
-        shape = RoundedCornerShape(28.dp),
-        color = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.97f),
-        tonalElevation = 4.dp,
-        modifier = modifier
-            .fillMaxWidth()
-            .border(1.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(28.dp))
-    ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 8.dp, vertical = 8.dp),
-            horizontalArrangement = Arrangement.SpaceEvenly,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            NavTabItem.entries.forEach { item ->
-                val isSelected = currentTab == item.tab
-                Surface(
-                    onClick = { onSelectTab(item.tab) },
-                    shape = RoundedCornerShape(20.dp),
-                    color = if (isSelected) MaterialTheme.colorScheme.primaryContainer else Color.Transparent,
-                    modifier = Modifier.testTag("nav_tab_${item.tab.name.lowercase()}")
-                ) {
-                    Row(
-                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(6.dp)
-                    ) {
-                        Icon(
-                            imageVector = if (isSelected) item.filledIcon else item.outlinedIcon,
-                            contentDescription = item.label,
-                            tint = if (isSelected) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.size(20.dp)
-                        )
-                        Text(
-                            text = item.label,
-                            style = MaterialTheme.typography.labelLarge,
-                            fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Normal,
-                            color = if (isSelected) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                }
-            }
-        }
-    }
 }

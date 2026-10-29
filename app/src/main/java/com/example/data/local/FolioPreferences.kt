@@ -6,12 +6,13 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 
 data class UserSettingsState(
-    val onboardingCompleted: Boolean = false,
+    val onboardingCompleted: Boolean = true,
     val themeMode: String = "SYSTEM", // SYSTEM, LIGHT, DARK
     val dynamicColor: Boolean = false,
     val languageCode: String = "English",
     val outputNamingPattern: String = "{name}_{tool}",
     val customOutputFolderUri: String = "",
+    val connectedFolderName: String = "",
     val defaultCompression: String = "MEDIUM",
     val defaultDpi: Int = 150,
     val appLockEnabled: Boolean = false,
@@ -23,8 +24,8 @@ data class UserSettingsState(
     val volumeKeyPaging: Boolean = false,
     val tapZonePaging: Boolean = true,
     val reduceMotion: Boolean = false,
-    val recentToolIds: List<String> = listOf("MERGE_PDF", "COMPRESS_PDF", "SCAN_TO_PDF", "SIGN_PDF"),
-    val searchHistory: List<String> = listOf("Architecture", "Financial", "Agreement")
+    val recentToolIds: List<String> = listOf("MERGE_PDF", "SCAN_TO_PDF", "SIGN_PDF", "SPLIT_PDF"),
+    val searchHistory: List<String> = emptyList()
 )
 
 class FolioPreferences(context: Context) {
@@ -34,15 +35,18 @@ class FolioPreferences(context: Context) {
     val settings: StateFlow<UserSettingsState> = _settings.asStateFlow()
 
     private fun loadState(): UserSettingsState {
-        val recentToolsRaw = prefs.getString("recent_tools", "MERGE_PDF,COMPRESS_PDF,SCAN_TO_PDF,SIGN_PDF") ?: ""
-        val historyRaw = prefs.getString("search_history", "Architecture,Financial,Confidential") ?: ""
+        val recentToolsRaw = prefs.getString("recent_tools", "MERGE_PDF,SCAN_TO_PDF,SIGN_PDF,SPLIT_PDF") ?: ""
+        val historyRaw = prefs.getString("search_history", "") ?: ""
+        val cleanHistory = historyRaw.split("|")
+            .filter { it.isNotBlank() && it !in setOf("Architecture", "Financial", "Agreement", "Confidential") }
         return UserSettingsState(
-            onboardingCompleted = prefs.getBoolean("onboarding_completed", false),
+            onboardingCompleted = prefs.getBoolean("onboarding_completed", true),
             themeMode = prefs.getString("theme_mode", "SYSTEM") ?: "SYSTEM",
             dynamicColor = prefs.getBoolean("dynamic_color", false),
             languageCode = prefs.getString("language_code", "English") ?: "English",
             outputNamingPattern = prefs.getString("output_naming", "{name}_{tool}") ?: "{name}_{tool}",
             customOutputFolderUri = prefs.getString("custom_output_uri", "") ?: "",
+            connectedFolderName = prefs.getString("connected_folder_name", "") ?: "",
             defaultCompression = prefs.getString("default_compression", "MEDIUM") ?: "MEDIUM",
             defaultDpi = prefs.getInt("default_dpi", 150),
             appLockEnabled = prefs.getBoolean("app_lock_enabled", false),
@@ -55,7 +59,7 @@ class FolioPreferences(context: Context) {
             tapZonePaging = prefs.getBoolean("tap_zone_paging", true),
             reduceMotion = prefs.getBoolean("reduce_motion", false),
             recentToolIds = recentToolsRaw.split(",").filter { it.isNotBlank() },
-            searchHistory = historyRaw.split("|").filter { it.isNotBlank() }
+            searchHistory = cleanHistory
         )
     }
 
@@ -69,6 +73,7 @@ class FolioPreferences(context: Context) {
             .putString("language_code", updated.languageCode)
             .putString("output_naming", updated.outputNamingPattern)
             .putString("custom_output_uri", updated.customOutputFolderUri)
+            .putString("connected_folder_name", updated.connectedFolderName)
             .putString("default_compression", updated.defaultCompression)
             .putInt("default_dpi", updated.defaultDpi)
             .putBoolean("app_lock_enabled", updated.appLockEnabled)

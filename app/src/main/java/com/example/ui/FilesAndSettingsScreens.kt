@@ -15,13 +15,16 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.Sort
 import androidx.compose.material.icons.automirrored.outlined.ViewList
 import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.ContentCopy
+import androidx.compose.material.icons.outlined.CreateNewFolder
 import androidx.compose.material.icons.outlined.DeleteForever
 import androidx.compose.material.icons.outlined.DeleteOutline
 import androidx.compose.material.icons.outlined.DriveFileRenameOutline
@@ -35,6 +38,7 @@ import androidx.compose.material.icons.outlined.MoreVert
 import androidx.compose.material.icons.outlined.RestoreFromTrash
 import androidx.compose.material.icons.outlined.Share
 import androidx.compose.material.icons.outlined.Tag
+import androidx.compose.material.icons.outlined.UploadFile
 import androidx.compose.material.icons.outlined.VerifiedUser
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -61,6 +65,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
@@ -78,8 +83,8 @@ import java.io.File
 
 enum class FilesSectionTab(val label: String) {
     LIBRARY("Library"),
-    VAULT("Private Vault"),
-    TRASH("Trash (30d)")
+    VAULT("Vault"),
+    TRASH("Trash")
 }
 
 enum class SortByOption(val label: String) {
@@ -97,8 +102,10 @@ fun FilesScreen(
     folders: List<FolderEntity>,
     tags: List<TagEntity>,
     appLockPin: String,
+    connectedFolderName: String = "",
     onOpenDocument: (DocumentEntity) -> Unit,
     onPickSafFile: () -> Unit,
+    onConnectFolder: () -> Unit = {},
     onCreateFolder: (String) -> Unit,
     onCreateTag: (String) -> Unit,
     onRenameDoc: (DocumentEntity, String) -> Unit,
@@ -156,41 +163,49 @@ fun FilesScreen(
     val activeTagName = selectedTag?.let { "#$it" } ?: "All Tags"
 
     LazyColumn(
-        contentPadding = PaddingValues(start = 20.dp, end = 20.dp, top = 16.dp, bottom = 116.dp),
-        verticalArrangement = Arrangement.spacedBy(18.dp),
+        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 16.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp),
         modifier = Modifier.fillMaxSize().testTag("files_screen_list")
     ) {
-        // Editorial Masthead
+        // 1. Clean Top Header
         item {
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Column {
-                    Text("Archive", style = MaterialTheme.typography.displayMedium)
+                Column(modifier = Modifier.weight(1f).padding(end = 12.dp)) {
                     Text(
-                        "Scoped Storage SAF • Colour-free tags • AES-256 Vault",
+                        text = "Files & Vault",
+                        style = MaterialTheme.typography.displayMedium,
+                        maxLines = 1
+                    )
+                    Text(
+                        text = if (connectedFolderName.isNotBlank()) "Synced folder: $connectedFolderName"
+                        else "Device files, folders & AES-256 Vault",
                         style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
                     )
                 }
                 Button(
                     onClick = onPickSafFile,
-                    shape = RoundedCornerShape(16.dp),
+                    shape = RoundedCornerShape(12.dp),
+                    contentPadding = PaddingValues(horizontal = 14.dp, vertical = 10.dp),
                     modifier = Modifier.testTag("files_saf_import_button")
                 ) {
-                    Icon(Icons.Outlined.FolderOpen, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Icon(Icons.Outlined.UploadFile, contentDescription = null, modifier = Modifier.size(18.dp))
                     Spacer(Modifier.width(6.dp))
-                    Text("Import SAF")
+                    Text("Import", maxLines = 1, softWrap = false)
                 }
             }
         }
 
-        // Sleek 3-Segment Section Switcher (Library | Private Vault | Trash)
+        // 2. Clean 3-Segment Section Switcher (Library | Vault | Trash)
         item {
             Surface(
-                shape = RoundedCornerShape(18.dp),
+                shape = RoundedCornerShape(14.dp),
                 color = MaterialTheme.colorScheme.surfaceVariant,
                 modifier = Modifier.fillMaxWidth()
             ) {
@@ -200,9 +215,14 @@ fun FilesScreen(
                 ) {
                     FilesSectionTab.entries.forEach { tab ->
                         val selected = sectionTab == tab
+                        val count = when (tab) {
+                            FilesSectionTab.LIBRARY -> libraryDocs.size
+                            FilesSectionTab.VAULT -> vaultDocs.size
+                            FilesSectionTab.TRASH -> trashedDocs.size
+                        }
                         Surface(
                             onClick = { sectionTab = tab },
-                            shape = RoundedCornerShape(14.dp),
+                            shape = RoundedCornerShape(10.dp),
                             color = if (selected) MaterialTheme.colorScheme.surface else Color.Transparent,
                             tonalElevation = if (selected) 2.dp else 0.dp,
                             modifier = Modifier
@@ -211,11 +231,14 @@ fun FilesScreen(
                         ) {
                             Box(
                                 contentAlignment = Alignment.Center,
-                                modifier = Modifier.padding(vertical = 10.dp)
+                                modifier = Modifier.padding(vertical = 10.dp, horizontal = 4.dp)
                             ) {
                                 Text(
-                                    text = tab.label,
+                                    text = "${tab.label} ($count)",
                                     style = MaterialTheme.typography.labelLarge,
+                                    maxLines = 1,
+                                    softWrap = false,
+                                    overflow = TextOverflow.Ellipsis,
                                     fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
                                     color = if (selected) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant
                                 )
@@ -228,88 +251,117 @@ fun FilesScreen(
 
         when (sectionTab) {
             FilesSectionTab.LIBRARY -> {
-                // Single Consolidated Filter & Sort Toolbar (replaces the 4 stacked chip rows)
+                // 3. Horizontally Scrollable Filter & Sort Toolbar (Prevents any chip from squeezing vertically!)
                 item {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.weight(1f)) {
+                        LazyRow(
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            modifier = Modifier.weight(1f)
+                        ) {
                             // Folder Dropdown Pill
-                            Box {
-                                FilterChip(
-                                    selected = selectedFolderId != null,
-                                    onClick = { folderMenuExpanded = true },
-                                    leadingIcon = { Icon(Icons.Outlined.Folder, contentDescription = null, modifier = Modifier.size(15.dp)) },
-                                    label = { Text(activeFolderName, maxLines = 1) }
-                                )
-                                DropdownMenu(expanded = folderMenuExpanded, onDismissRequest = { folderMenuExpanded = false }) {
-                                    DropdownMenuItem(
-                                        text = { Text("All Folders") },
-                                        onClick = { selectedFolderId = null; folderMenuExpanded = false }
+                            item {
+                                Box {
+                                    FilterChip(
+                                        selected = selectedFolderId != null,
+                                        onClick = { folderMenuExpanded = true },
+                                        leadingIcon = { Icon(Icons.Outlined.Folder, contentDescription = null, modifier = Modifier.size(16.dp)) },
+                                        label = { Text(activeFolderName, maxLines = 1, softWrap = false) }
                                     )
-                                    folders.forEach { folder ->
+                                    DropdownMenu(expanded = folderMenuExpanded, onDismissRequest = { folderMenuExpanded = false }) {
                                         DropdownMenuItem(
-                                            text = { Text(folder.name) },
-                                            onClick = { selectedFolderId = folder.id; folderMenuExpanded = false }
+                                            text = { Text("All Folders") },
+                                            onClick = { selectedFolderId = null; folderMenuExpanded = false }
+                                        )
+                                        folders.forEach { folder ->
+                                            DropdownMenuItem(
+                                                text = { Text(folder.name) },
+                                                onClick = { selectedFolderId = folder.id; folderMenuExpanded = false }
+                                            )
+                                        }
+                                        HorizontalDivider()
+                                        DropdownMenuItem(
+                                            text = { Text("+ New Folder") },
+                                            onClick = { folderMenuExpanded = false; showNewFolderDialog = true }
                                         )
                                     }
-                                    HorizontalDivider()
-                                    DropdownMenuItem(
-                                        text = { Text("+ New Folder") },
-                                        onClick = { folderMenuExpanded = false; showNewFolderDialog = true }
-                                    )
                                 }
                             }
 
                             // Tag Dropdown Pill
-                            Box {
-                                FilterChip(
-                                    selected = selectedTag != null,
-                                    onClick = { tagMenuExpanded = true },
-                                    leadingIcon = { Icon(Icons.Outlined.Tag, contentDescription = null, modifier = Modifier.size(15.dp)) },
-                                    label = { Text(activeTagName, maxLines = 1) }
-                                )
-                                DropdownMenu(expanded = tagMenuExpanded, onDismissRequest = { tagMenuExpanded = false }) {
-                                    DropdownMenuItem(
-                                        text = { Text("All Tags") },
-                                        onClick = { selectedTag = null; tagMenuExpanded = false }
+                            item {
+                                Box {
+                                    FilterChip(
+                                        selected = selectedTag != null,
+                                        onClick = { tagMenuExpanded = true },
+                                        leadingIcon = { Icon(Icons.Outlined.Tag, contentDescription = null, modifier = Modifier.size(16.dp)) },
+                                        label = { Text(activeTagName, maxLines = 1, softWrap = false) }
                                     )
-                                    tags.forEach { tag ->
+                                    DropdownMenu(expanded = tagMenuExpanded, onDismissRequest = { tagMenuExpanded = false }) {
                                         DropdownMenuItem(
-                                            text = { Text("#${tag.name}") },
-                                            onClick = { selectedTag = tag.name; tagMenuExpanded = false }
+                                            text = { Text("All Tags") },
+                                            onClick = { selectedTag = null; tagMenuExpanded = false }
+                                        )
+                                        tags.forEach { tag ->
+                                            DropdownMenuItem(
+                                                text = { Text("#${tag.name}") },
+                                                onClick = { selectedTag = tag.name; tagMenuExpanded = false }
+                                            )
+                                        }
+                                        HorizontalDivider()
+                                        DropdownMenuItem(
+                                            text = { Text("+ New Tag") },
+                                            onClick = { tagMenuExpanded = false; showNewTagDialog = true }
                                         )
                                     }
-                                    HorizontalDivider()
-                                    DropdownMenuItem(
-                                        text = { Text("+ New Tag") },
-                                        onClick = { tagMenuExpanded = false; showNewTagDialog = true }
-                                    )
                                 }
                             }
 
                             // Sort Dropdown Pill
-                            Box {
-                                FilterChip(
-                                    selected = false,
-                                    onClick = { sortMenuExpanded = true },
-                                    leadingIcon = { Icon(Icons.AutoMirrored.Outlined.Sort, contentDescription = null, modifier = Modifier.size(15.dp)) },
-                                    label = { Text(sortOption.label) }
-                                )
-                                DropdownMenu(expanded = sortMenuExpanded, onDismissRequest = { sortMenuExpanded = false }) {
-                                    SortByOption.entries.forEach { opt ->
-                                        DropdownMenuItem(
-                                            text = { Text("Sort by ${opt.label}") },
-                                            onClick = { sortOption = opt; sortMenuExpanded = false }
-                                        )
+                            item {
+                                Box {
+                                    FilterChip(
+                                        selected = false,
+                                        onClick = { sortMenuExpanded = true },
+                                        leadingIcon = { Icon(Icons.AutoMirrored.Outlined.Sort, contentDescription = null, modifier = Modifier.size(16.dp)) },
+                                        label = { Text(sortOption.label, maxLines = 1, softWrap = false) }
+                                    )
+                                    DropdownMenu(expanded = sortMenuExpanded, onDismissRequest = { sortMenuExpanded = false }) {
+                                        SortByOption.entries.forEach { opt ->
+                                            DropdownMenuItem(
+                                                text = { Text("Sort by ${opt.label}") },
+                                                onClick = { sortOption = opt; sortMenuExpanded = false }
+                                            )
+                                        }
                                     }
                                 }
                             }
+
+                            // Sync Device Folder Pill
+                            item {
+                                FilterChip(
+                                    selected = connectedFolderName.isNotBlank(),
+                                    onClick = onConnectFolder,
+                                    leadingIcon = { Icon(Icons.Outlined.CreateNewFolder, contentDescription = null, modifier = Modifier.size(16.dp)) },
+                                    label = {
+                                        Text(
+                                            if (connectedFolderName.isNotBlank()) "Sync: $connectedFolderName" else "Connect Folder",
+                                            maxLines = 1,
+                                            softWrap = false
+                                        )
+                                    }
+                                )
+                            }
                         }
 
-                        IconButton(onClick = { isGridView = !isGridView }, modifier = Modifier.testTag("files_grid_toggle_button")) {
+                        Spacer(Modifier.width(4.dp))
+                        IconButton(
+                            onClick = { isGridView = !isGridView },
+                            modifier = Modifier.testTag("files_grid_toggle_button")
+                        ) {
                             Icon(
                                 if (isGridView) Icons.AutoMirrored.Outlined.ViewList else Icons.Outlined.GridView,
                                 contentDescription = "Toggle Grid or List view"
@@ -318,7 +370,64 @@ fun FilesScreen(
                     }
                 }
 
-                if (isGridView) {
+                if (filteredLibrary.isEmpty()) {
+                    item {
+                        Card(
+                            shape = RoundedCornerShape(18.dp),
+                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .border(1.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(18.dp))
+                        ) {
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(24.dp),
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                verticalArrangement = Arrangement.spacedBy(12.dp)
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(48.dp)
+                                        .clip(CircleShape)
+                                        .background(MaterialTheme.colorScheme.primaryContainer),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Icon(
+                                        Icons.Outlined.FolderOpen,
+                                        contentDescription = null,
+                                        tint = MaterialTheme.colorScheme.primary
+                                    )
+                                }
+                                Text("No Files in This View", style = MaterialTheme.typography.titleMedium)
+                                Text(
+                                    "Import files from your device or grant permission to sync a device folder.",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                                ) {
+                                    Button(
+                                        onClick = onPickSafFile,
+                                        shape = RoundedCornerShape(12.dp),
+                                        modifier = Modifier.weight(1f)
+                                    ) {
+                                        Text("Pick Files", maxLines = 1, softWrap = false)
+                                    }
+                                    OutlinedButton(
+                                        onClick = onConnectFolder,
+                                        shape = RoundedCornerShape(12.dp),
+                                        modifier = Modifier.weight(1f)
+                                    ) {
+                                        Text("Sync Folder", maxLines = 1, softWrap = false)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                } else if (isGridView) {
                     val gridRows = filteredLibrary.chunked(2)
                     items(gridRows.size) { rIdx ->
                         val pair = gridRows[rIdx]
@@ -329,11 +438,11 @@ fun FilesScreen(
                             pair.forEach { doc ->
                                 Surface(
                                     onClick = { onOpenDocument(doc) },
-                                    shape = RoundedCornerShape(20.dp),
+                                    shape = RoundedCornerShape(16.dp),
                                     color = MaterialTheme.colorScheme.surface,
                                     modifier = Modifier
                                         .weight(1f)
-                                        .border(1.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(20.dp))
+                                        .border(1.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(16.dp))
                                 ) {
                                     Column(
                                         modifier = Modifier.padding(14.dp),
@@ -344,12 +453,12 @@ fun FilesScreen(
                                             filePath = doc.filePath,
                                             formatName = doc.formatName,
                                             pageIndex = 0,
-                                            width = 88.dp,
-                                            height = 120.dp
+                                            width = 84.dp,
+                                            height = 114.dp
                                         )
                                         Column(modifier = Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(2.dp)) {
                                             Text(doc.displayName, style = MaterialTheme.typography.titleSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                                            Text("${doc.pageCount} p. • ${doc.sizeBytes / 1024} KB", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                            Text("${doc.formatName} • ${doc.pageCount} p. • ${(doc.sizeBytes / 1024).coerceAtLeast(1)} KB", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1)
                                         }
                                     }
                                 }
@@ -385,11 +494,11 @@ fun FilesScreen(
                 if (!isVaultUnlocked) {
                     item {
                         Card(
-                            shape = RoundedCornerShape(24.dp),
+                            shape = RoundedCornerShape(20.dp),
                             colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .border(1.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(24.dp))
+                                .border(1.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(20.dp))
                         ) {
                             TactilePinPad(
                                 title = "Encrypted Private Vault",
@@ -411,11 +520,11 @@ fun FilesScreen(
                             horizontalArrangement = Arrangement.SpaceBetween,
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Text("Unlocked Vault (${vaultDocs.size} files)", style = MaterialTheme.typography.titleMedium)
+                            Text("Unlocked Vault (${vaultDocs.size})", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
                             OutlinedButton(onClick = { isVaultUnlocked = false }) {
                                 Icon(Icons.Outlined.Lock, contentDescription = null, modifier = Modifier.size(16.dp))
                                 Spacer(Modifier.width(4.dp))
-                                Text("Lock Vault")
+                                Text("Lock Vault", maxLines = 1, softWrap = false)
                             }
                         }
                     }
@@ -431,23 +540,23 @@ fun FilesScreen(
                         items(vaultDocs, key = { it.id }) { vDoc ->
                             Surface(
                                 onClick = { onOpenDocument(vDoc) },
-                                shape = RoundedCornerShape(18.dp),
+                                shape = RoundedCornerShape(14.dp),
                                 color = MaterialTheme.colorScheme.surface,
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .border(1.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(18.dp))
+                                    .border(1.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(14.dp))
                             ) {
                                 Row(
-                                    modifier = Modifier.padding(16.dp),
+                                    modifier = Modifier.padding(14.dp),
                                     verticalAlignment = Alignment.CenterVertically,
                                     horizontalArrangement = Arrangement.SpaceBetween
                                 ) {
                                     Column(Modifier.weight(1f)) {
-                                        Text(vDoc.displayName, style = MaterialTheme.typography.titleSmall)
-                                        Text("AES-256-GCM Encrypted • ${vDoc.sizeBytes / 1024} KB", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
+                                        Text(vDoc.displayName, style = MaterialTheme.typography.titleSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                        Text("AES-256-GCM Encrypted • ${(vDoc.sizeBytes / 1024).coerceAtLeast(1)} KB", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
                                     }
                                     TextButton(onClick = { onRestoreFromVault(vDoc) }) {
-                                        Text("Restore to Library")
+                                        Text("Restore", maxLines = 1, softWrap = false)
                                     }
                                 }
                             }
@@ -474,7 +583,7 @@ fun FilesScreen(
                                 onClick = onEmptyTrash,
                                 colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error)
                             ) {
-                                Text("Empty Trash")
+                                Text("Empty Trash", maxLines = 1, softWrap = false)
                             }
                         }
                     }
@@ -486,19 +595,19 @@ fun FilesScreen(
                 } else {
                     items(trashedDocs, key = { it.id }) { tDoc ->
                         Surface(
-                            shape = RoundedCornerShape(18.dp),
+                            shape = RoundedCornerShape(14.dp),
                             color = MaterialTheme.colorScheme.surface,
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .border(1.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(18.dp))
+                                .border(1.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(14.dp))
                         ) {
                             Row(
-                                modifier = Modifier.padding(16.dp),
+                                modifier = Modifier.padding(14.dp),
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
                                 Column(Modifier.weight(1f)) {
-                                    Text(tDoc.displayName, style = MaterialTheme.typography.titleSmall)
-                                    Text("${tDoc.sizeBytes / 1024} KB", style = MaterialTheme.typography.bodySmall)
+                                    Text(tDoc.displayName, style = MaterialTheme.typography.titleSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                    Text("${(tDoc.sizeBytes / 1024).coerceAtLeast(1)} KB", style = MaterialTheme.typography.bodySmall)
                                 }
                                 IconButton(onClick = { onRestoreFromTrash(tDoc) }) {
                                     Icon(Icons.Outlined.RestoreFromTrash, contentDescription = "Restore")
@@ -540,7 +649,7 @@ fun FilesScreen(
     if (showNewTagDialog) {
         AlertDialog(
             onDismissRequest = { showNewTagDialog = false },
-            title = { Text("Create Colour-Free Tag") },
+            title = { Text("Create Tag") },
             text = {
                 OutlinedTextField(
                     value = newTagName,
@@ -585,7 +694,7 @@ fun FilesScreen(
     docToTag?.let { target ->
         AlertDialog(
             onDismissRequest = { docToTag = null },
-            title = { Text("Edit Colour-Free Tags") },
+            title = { Text("Edit Tags") },
             text = {
                 OutlinedTextField(
                     value = tagInputText,
@@ -618,75 +727,76 @@ private fun LibraryDocumentItemWithMenu(
 ) {
     var menuExpanded by remember { mutableStateOf(false) }
 
-    Column(modifier = Modifier.fillMaxWidth()) {
-        Surface(
-            onClick = onOpen,
-            color = Color.Transparent,
-            modifier = Modifier.fillMaxWidth()
+    Surface(
+        onClick = onOpen,
+        shape = RoundedCornerShape(14.dp),
+        color = MaterialTheme.colorScheme.surface,
+        tonalElevation = 0.5.dp,
+        modifier = Modifier
+            .fillMaxWidth()
+            .border(1.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(14.dp))
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically
         ) {
-            Row(
-                modifier = Modifier.padding(vertical = 10.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                DocumentPageThumbnail(
-                    filePath = doc.filePath,
-                    formatName = doc.formatName,
-                    pageIndex = 0,
-                    width = 44.dp,
-                    height = 58.dp
+            DocumentPageThumbnail(
+                filePath = doc.filePath,
+                formatName = doc.formatName,
+                pageIndex = 0,
+                width = 42.dp,
+                height = 56.dp
+            )
+            Spacer(Modifier.width(12.dp))
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                Text(doc.displayName, style = MaterialTheme.typography.titleSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(
+                    text = "${doc.formatName} • ${doc.pageCount} p. • ${(doc.sizeBytes / 1024).coerceAtLeast(1)} KB" +
+                        if (doc.tagsCsv.isNotBlank()) " • #${doc.tagsCsv.replace(",", " #")}" else "",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
                 )
-                Spacer(Modifier.width(14.dp))
-                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                    Text(doc.displayName, style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    Text(
-                        text = "${doc.formatName}  •  ${doc.pageCount} p.  •  ${(doc.sizeBytes / 1024).coerceAtLeast(1)} KB" +
-                            if (doc.tagsCsv.isNotBlank()) "  •  #${doc.tagsCsv.replace(",", " #")}" else "",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
+            }
+            Box {
+                IconButton(onClick = { menuExpanded = true }) {
+                    Icon(Icons.Outlined.MoreVert, contentDescription = "Document actions")
                 }
-                Box {
-                    IconButton(onClick = { menuExpanded = true }) {
-                        Icon(Icons.Outlined.MoreVert, contentDescription = "Document actions")
-                    }
-                    DropdownMenu(expanded = menuExpanded, onDismissRequest = { menuExpanded = false }) {
-                        DropdownMenuItem(
-                            text = { Text("Rename") },
-                            leadingIcon = { Icon(Icons.Outlined.DriveFileRenameOutline, contentDescription = null) },
-                            onClick = { menuExpanded = false; onRename() }
-                        )
-                        DropdownMenuItem(
-                            text = { Text("Duplicate Copy") },
-                            leadingIcon = { Icon(Icons.Outlined.ContentCopy, contentDescription = null) },
-                            onClick = { menuExpanded = false; onDuplicate() }
-                        )
-                        DropdownMenuItem(
-                            text = { Text("Edit Tags") },
-                            leadingIcon = { Icon(Icons.Outlined.Add, contentDescription = null) },
-                            onClick = { menuExpanded = false; onEditTags() }
-                        )
-                        DropdownMenuItem(
-                            text = { Text("Encrypt to Private Vault") },
-                            leadingIcon = { Icon(Icons.Outlined.EnhancedEncryption, contentDescription = null) },
-                            onClick = { menuExpanded = false; onMoveToVault() }
-                        )
-                        DropdownMenuItem(
-                            text = { Text("Share Offline") },
-                            leadingIcon = { Icon(Icons.Outlined.Share, contentDescription = null) },
-                            onClick = { menuExpanded = false; onShare() }
-                        )
-                        DropdownMenuItem(
-                            text = { Text("Move to Trash", color = MaterialTheme.colorScheme.error) },
-                            leadingIcon = { Icon(Icons.Outlined.DeleteOutline, contentDescription = null, tint = MaterialTheme.colorScheme.error) },
-                            onClick = { menuExpanded = false; onTrash() }
-                        )
-                    }
+                DropdownMenu(expanded = menuExpanded, onDismissRequest = { menuExpanded = false }) {
+                    DropdownMenuItem(
+                        text = { Text("Rename") },
+                        leadingIcon = { Icon(Icons.Outlined.DriveFileRenameOutline, contentDescription = null) },
+                        onClick = { menuExpanded = false; onRename() }
+                    )
+                    DropdownMenuItem(
+                        text = { Text("Duplicate Copy") },
+                        leadingIcon = { Icon(Icons.Outlined.ContentCopy, contentDescription = null) },
+                        onClick = { menuExpanded = false; onDuplicate() }
+                    )
+                    DropdownMenuItem(
+                        text = { Text("Edit Tags") },
+                        leadingIcon = { Icon(Icons.Outlined.Add, contentDescription = null) },
+                        onClick = { menuExpanded = false; onEditTags() }
+                    )
+                    DropdownMenuItem(
+                        text = { Text("Encrypt to Private Vault") },
+                        leadingIcon = { Icon(Icons.Outlined.EnhancedEncryption, contentDescription = null) },
+                        onClick = { menuExpanded = false; onMoveToVault() }
+                    )
+                    DropdownMenuItem(
+                        text = { Text("Share Offline") },
+                        leadingIcon = { Icon(Icons.Outlined.Share, contentDescription = null) },
+                        onClick = { menuExpanded = false; onShare() }
+                    )
+                    DropdownMenuItem(
+                        text = { Text("Move to Trash", color = MaterialTheme.colorScheme.error) },
+                        leadingIcon = { Icon(Icons.Outlined.DeleteOutline, contentDescription = null, tint = MaterialTheme.colorScheme.error) },
+                        onClick = { menuExpanded = false; onTrash() }
+                    )
                 }
             }
         }
-        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
     }
 }
 
@@ -705,17 +815,19 @@ fun SettingsScreen(
     var newPinInput by remember { mutableStateOf(settings.appLockPin) }
 
     LazyColumn(
-        contentPadding = PaddingValues(start = 20.dp, end = 20.dp, top = 16.dp, bottom = 116.dp),
-        verticalArrangement = Arrangement.spacedBy(20.dp),
+        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 16.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp),
         modifier = Modifier.fillMaxSize().testTag("settings_screen_list")
     ) {
         item {
             Column {
                 Text("Settings", style = MaterialTheme.typography.displayMedium)
                 Text(
-                    "Editorial appearance, output rules, biometric vault & storage",
+                    "Theme, output rules, security vault & storage",
                     style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
                 )
             }
         }
@@ -723,20 +835,20 @@ fun SettingsScreen(
         // 1. Appearance & Typography
         item {
             Card(
-                shape = RoundedCornerShape(22.dp),
+                shape = RoundedCornerShape(18.dp),
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
                 modifier = Modifier
                     .fillMaxWidth()
-                    .border(1.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(22.dp))
+                    .border(1.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(18.dp))
             ) {
-                Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
-                    Text("Appearance & Palette", style = MaterialTheme.typography.headlineMedium)
+                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Text("Appearance", style = MaterialTheme.typography.headlineMedium)
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        listOf("SYSTEM" to "System", "LIGHT" to "Alabaster Light", "DARK" to "Obsidian Dark").forEach { (code, label) ->
+                        listOf("SYSTEM" to "System", "LIGHT" to "Studio Light", "DARK" to "Slate Dark").forEach { (code, label) ->
                             FilterChip(
                                 selected = settings.themeMode == code,
                                 onClick = { onUpdateSettings { it.copy(themeMode = code) } },
-                                label = { Text(label) },
+                                label = { Text(label, maxLines = 1, softWrap = false) },
                                 modifier = Modifier.testTag("theme_chip_${code.lowercase()}")
                             )
                         }
@@ -747,9 +859,9 @@ fun SettingsScreen(
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Column(Modifier.weight(1f)) {
-                            Text("Material You Dynamic Colour", style = MaterialTheme.typography.titleSmall)
-                            Text("Use wallpaper accent instead of Muted Royal Indigo", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Column(Modifier.weight(1f).padding(end = 8.dp)) {
+                            Text("Material You Dynamic Color", style = MaterialTheme.typography.titleSmall)
+                            Text("Use system wallpaper palette", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                         Switch(
                             checked = settings.dynamicColor,
@@ -761,7 +873,7 @@ fun SettingsScreen(
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Text("Reduce Motion (Accessibility)", style = MaterialTheme.typography.titleSmall)
+                        Text("Reduce Motion", style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
                         Switch(
                             checked = settings.reduceMotion,
                             onCheckedChange = { r -> onUpdateSettings { it.copy(reduceMotion = r) } }
@@ -774,18 +886,18 @@ fun SettingsScreen(
         // 2. Output Naming & Reader Defaults
         item {
             Card(
-                shape = RoundedCornerShape(22.dp),
+                shape = RoundedCornerShape(18.dp),
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
                 modifier = Modifier
                     .fillMaxWidth()
-                    .border(1.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(22.dp))
+                    .border(1.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(18.dp))
             ) {
-                Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     Text("Output Naming & Reader", style = MaterialTheme.typography.headlineMedium)
                     OutlinedTextField(
                         value = settings.outputNamingPattern,
                         onValueChange = { p -> onUpdateSettings { it.copy(outputNamingPattern = p) } },
-                        label = { Text("Auto-Naming Template ({name}_{tool} or {name}_{date})") },
+                        label = { Text("Auto-Naming Template ({name}_{tool})") },
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth()
                     )
@@ -794,7 +906,7 @@ fun SettingsScreen(
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Text("Keep Screen On While Reading", style = MaterialTheme.typography.titleSmall)
+                        Text("Keep Screen On While Reading", style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
                         Switch(
                             checked = settings.keepScreenOnInReader,
                             onCheckedChange = { k -> onUpdateSettings { it.copy(keepScreenOnInReader = k) } }
@@ -805,7 +917,7 @@ fun SettingsScreen(
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Text("Volume-Key Page Turning", style = MaterialTheme.typography.titleSmall)
+                        Text("Volume-Key Page Turning", style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
                         Switch(
                             checked = settings.volumeKeyPaging,
                             onCheckedChange = { v -> onUpdateSettings { it.copy(volumeKeyPaging = v) } }
@@ -818,21 +930,21 @@ fun SettingsScreen(
         // 3. Security, App Lock & Freehand Signatures
         item {
             Card(
-                shape = RoundedCornerShape(22.dp),
+                shape = RoundedCornerShape(18.dp),
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
                 modifier = Modifier
                     .fillMaxWidth()
-                    .border(1.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(22.dp))
+                    .border(1.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(18.dp))
             ) {
-                Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     Text("Security, Vault & Signatures", style = MaterialTheme.typography.headlineMedium)
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Column(Modifier.weight(1f)) {
-                            Text("Biometric / PIN App Lock on Startup", style = MaterialTheme.typography.titleSmall)
+                        Column(Modifier.weight(1f).padding(end = 8.dp)) {
+                            Text("Biometric / PIN App Lock", style = MaterialTheme.typography.titleSmall)
                             Text("Auto-lock timeout: ${settings.autoLockTimeoutMinutes} minutes", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                         Switch(
@@ -846,7 +958,7 @@ fun SettingsScreen(
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Column(Modifier.weight(1f)) {
+                        Column(Modifier.weight(1f).padding(end = 8.dp)) {
                             Text("Vault & App Lock PIN", style = MaterialTheme.typography.titleSmall)
                             Text("Masked (${"•".repeat(settings.appLockPin.length.coerceAtLeast(4))})", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
@@ -854,7 +966,7 @@ fun SettingsScreen(
                             newPinInput = settings.appLockPin
                             showChangePinDialog = true
                         }) {
-                            Text("Change PIN")
+                            Text("Change PIN", maxLines = 1, softWrap = false)
                         }
                     }
                     Row(
@@ -862,9 +974,9 @@ fun SettingsScreen(
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Column(Modifier.weight(1f)) {
-                            Text("Hide Content in Recents (FLAG_SECURE)", style = MaterialTheme.typography.titleSmall)
-                            Text("Masks app preview in system task switcher", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Column(Modifier.weight(1f).padding(end = 8.dp)) {
+                            Text("Hide Content in Recents", style = MaterialTheme.typography.titleSmall)
+                            Text("Masks preview in task switcher", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                         Switch(
                             checked = settings.hideInRecents,
@@ -878,11 +990,11 @@ fun SettingsScreen(
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Text("Saved Signatures", style = MaterialTheme.typography.titleMedium)
+                        Text("Saved Signatures", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
                         Button(onClick = { showSignaturePad = true }) {
                             Icon(Icons.Outlined.Draw, contentDescription = null, modifier = Modifier.size(16.dp))
                             Spacer(Modifier.width(6.dp))
-                            Text("Draw Signature")
+                            Text("Add Signature", maxLines = 1, softWrap = false)
                         }
                     }
                     signatures.forEach { sig ->
@@ -891,7 +1003,7 @@ fun SettingsScreen(
                             horizontalArrangement = Arrangement.SpaceBetween,
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Text("${sig.label}: ${sig.typedText}", style = MaterialTheme.typography.bodyMedium)
+                            Text("${sig.label}: ${sig.typedText}", style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
                             IconButton(onClick = { onDeleteSignature(sig.id) }) {
                                 Icon(Icons.Outlined.DeleteOutline, contentDescription = "Delete signature")
                             }
@@ -904,59 +1016,66 @@ fun SettingsScreen(
         // 4. Segmented Storage & Cache Manager
         item {
             Card(
-                shape = RoundedCornerShape(22.dp),
+                shape = RoundedCornerShape(18.dp),
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
                 modifier = Modifier
                     .fillMaxWidth()
-                    .border(1.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(22.dp))
+                    .border(1.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(18.dp))
             ) {
-                Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     Text("Storage & Cache Manager", style = MaterialTheme.typography.headlineMedium)
                     SegmentedStorageBar(breakdown = storageBreakdown)
                     OutlinedButton(
                         onClick = onClearCache,
                         modifier = Modifier.fillMaxWidth().testTag("settings_clear_cache_button")
                     ) {
-                        Text("Clear Bitmap Cache & Temporary Scratch")
+                        Text("Clear Bitmap Cache & Temporary Scratch", maxLines = 1, overflow = TextOverflow.Ellipsis)
                     }
                 }
             }
         }
 
-        // 5. About, Release Pipeline & 100% Offline Runtime Attestation
+        // 5. About & 100% Offline Runtime Attestation
         item {
             val context = LocalContext.current
             var liveAuditReport by remember { mutableStateOf<OfflineReleaseAuditReport?>(null) }
 
             Card(
-                shape = RoundedCornerShape(22.dp),
+                shape = RoundedCornerShape(18.dp),
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
                 modifier = Modifier
                     .fillMaxWidth()
-                    .border(1.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(22.dp))
+                    .border(1.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(18.dp))
             ) {
-                Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.SpaceBetween
                     ) {
-                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            modifier = Modifier.weight(1f)
+                        ) {
                             Icon(Icons.Outlined.VerifiedUser, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
                             Column {
                                 Text(
                                     text = "Folio v${com.example.BuildConfig.VERSION_NAME} (Build ${com.example.BuildConfig.VERSION_CODE})",
-                                    style = MaterialTheme.typography.titleMedium
+                                    style = MaterialTheme.typography.titleMedium,
+                                    maxLines = 1
                                 )
                                 Text(
-                                    text = "${com.example.BuildConfig.APPLICATION_ID} • GitHub Releases Channel",
+                                    text = com.example.BuildConfig.APPLICATION_ID,
                                     style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
                                 )
                             }
                         }
                         Surface(
-                            shape = RoundedCornerShape(10.dp),
+                            shape = RoundedCornerShape(8.dp),
                             color = MaterialTheme.colorScheme.primaryContainer
                         ) {
                             Text(
@@ -970,7 +1089,7 @@ fun SettingsScreen(
                     }
 
                     Text(
-                        "Permissions Audit: INTERNET and ACCESS_NETWORK_STATE are stripped at build time and verified in CI via aapt2. Playfair Display & Inter typography, AndroidX PdfRenderer, PdfBox-Android (Apache 2.0), CameraX, and Room run 100% locally on-device.",
+                        "All PDF tools, CameraX scanning, and storage run 100% locally on your device with zero network permissions.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -978,7 +1097,7 @@ fun SettingsScreen(
                     val report = liveAuditReport
                     if (report != null) {
                         Surface(
-                            shape = RoundedCornerShape(14.dp),
+                            shape = RoundedCornerShape(12.dp),
                             color = if (report.isStrictlyOffline) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.55f)
                             else MaterialTheme.colorScheme.errorContainer,
                             modifier = Modifier.fillMaxWidth()
@@ -991,13 +1110,8 @@ fun SettingsScreen(
                                     color = if (report.isStrictlyOffline) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error
                                 )
                                 Text(
-                                    text = "INTERNET: ${if (report.hasInternetPermission) "Present" else "Stripped (None)"}  •  ACCESS_NETWORK_STATE: ${if (report.hasNetworkStatePermission) "Present" else "Stripped (None)"}",
+                                    text = "INTERNET: ${if (report.hasInternetPermission) "Present" else "Stripped"} • ACCESS_NETWORK_STATE: ${if (report.hasNetworkStatePermission) "Present" else "Stripped"}",
                                     style = MaterialTheme.typography.labelSmall
-                                )
-                                Text(
-                                    text = "Declared Install/Runtime Permissions (${report.requestedPermissions.size}): ${report.requestedPermissions.joinToString { it.substringAfterLast('.') }.ifBlank { "None" }}",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
                             }
                         }
@@ -1009,7 +1123,7 @@ fun SettingsScreen(
                     ) {
                         Icon(Icons.Outlined.VerifiedUser, contentDescription = null, modifier = Modifier.size(16.dp))
                         Spacer(Modifier.width(8.dp))
-                        Text(if (liveAuditReport == null) "Verify Runtime Offline APK Integrity" else "Re-Run Runtime Offline Audit")
+                        Text(if (liveAuditReport == null) "Verify Offline APK Integrity" else "Re-Run Offline Audit", maxLines = 1)
                     }
                 }
             }

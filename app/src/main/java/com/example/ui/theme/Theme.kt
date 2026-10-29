@@ -20,7 +20,7 @@ private val FolioDarkColorScheme = darkColorScheme(
     onPrimaryContainer = FolioOnIndigoContainerDark,
     secondary = FolioIndigoDark,
     onSecondary = FolioOnIndigoDark,
-    secondaryContainer = FolioDarkSurfaceHigh,
+    secondaryContainer = FolioDarkSurfaceVariant,
     onSecondaryContainer = FolioDarkOnSurface,
     tertiary = FolioIndigoDark,
     onTertiary = FolioOnIndigoDark,
@@ -50,7 +50,7 @@ private val FolioLightColorScheme = lightColorScheme(
     onPrimaryContainer = FolioOnIndigoContainerLight,
     secondary = FolioIndigoLight,
     onSecondary = FolioOnIndigoLight,
-    secondaryContainer = FolioLightSurfaceHigh,
+    secondaryContainer = FolioLightSurfaceVariant,
     onSecondaryContainer = FolioLightOnSurface,
     tertiary = FolioIndigoLight,
     onTertiary = FolioOnIndigoLight,
@@ -60,8 +60,8 @@ private val FolioLightColorScheme = lightColorScheme(
     onSurface = FolioLightOnSurface,
     surfaceVariant = FolioLightSurfaceVariant,
     onSurfaceVariant = FolioLightOnSurfaceVariant,
-    surfaceContainerLowest = FolioLightBackground,
-    surfaceContainerLow = FolioLightSurface,
+    surfaceContainerLowest = FolioLightSurface,
+    surfaceContainerLow = FolioLightBackground,
     surfaceContainer = FolioLightSurfaceVariant,
     surfaceContainerHigh = FolioLightSurfaceHigh,
     surfaceContainerHighest = FolioLightOutline,
@@ -74,11 +74,11 @@ private val FolioLightColorScheme = lightColorScheme(
 )
 
 val FolioShapes = Shapes(
-    extraSmall = RoundedCornerShape(10.dp),
-    small = RoundedCornerShape(14.dp),
-    medium = RoundedCornerShape(20.dp),
-    large = RoundedCornerShape(24.dp),
-    extraLarge = RoundedCornerShape(28.dp)
+    extraSmall = RoundedCornerShape(8.dp),
+    small = RoundedCornerShape(12.dp),
+    medium = RoundedCornerShape(16.dp),
+    large = RoundedCornerShape(20.dp),
+    extraLarge = RoundedCornerShape(24.dp)
 )
 
 @Composable
