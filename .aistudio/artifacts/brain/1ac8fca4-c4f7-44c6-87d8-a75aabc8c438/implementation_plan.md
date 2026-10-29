@@ -1,93 +1,104 @@
-# Folio — Fix GitHub Actions `:app:testDebugUnitTest` Failure (`4 tests completed, 1 failed`)
+# Folio — Fix "App not installed as package appears to be invalid" APK Installation Error
 
-Resolve the `Execution failed for task ':app:testDebugUnitTest' (4 tests completed, 1 failed)` error occurring in Step 2 of the GitHub Actions pipeline by aligning the CI JDK version with Android SDK 36 / Robolectric 4.16 bytecode requirements, adding required JVM module-open and headless flags for Robolectric on Linux runners, and surfacing full stack traces and JUnit summaries directly in GitHub Actions logs.
+Eliminate the Android Package Installer **"App not installed as package appears to be invalid"** error by fixing unsigned/unaligned release APK output, enforcing explicit `zipalign` + `apksigner` (V1 + V2 + V3 Signature Schemes) signing and verification in CI, enabling `android:extractNativeLibs="true"`, and streamlining the release pipeline to publish only the verified Universal `.apk` and `SHA256SUMS.txt`.
 
 ## User Review & Critical Decisions
 
 > [!IMPORTANT]
-> **Root Cause Analysis of `4 tests completed, 1 failed`**:
-> - `ExampleUnitTest` contains **3** pure JVM unit tests (`documentFormat_detectsAllSupportedFormats`, `parsePageIndices_handlesRangesAndListsCorrectly`, `allThirtyOnePdfTools_areRegistered`), all **3 of which pass**.
-> - `ExampleRobolectricTest` uses `@RunWith(RobolectricTestRunner::class)` with `@Config(sdk = [36])` and `robolectric = "4.16.1"`. Android 16 (API 36) `android-all-instrumented` JARs and Gradle 9.3.1 / AGP 9.1.1 require **JDK 21 bytecode support (class file version 65.0)**.
-> - Because the GitHub Actions workflows were configured with **JDK 17** (`java-version: "17"` — class file version 61.0), JUnit 4 failed during runner initialization of `ExampleRobolectricTest` (`UnsupportedClassVersionError` / `initializationError`) and recorded the entire `ExampleRobolectricTest` class as **1 failed test** before executing its methods (`3 passed + 1 failed = 4 tests completed, 1 failed`).
+> **Why "App not installed as package appears to be invalid" Happened on Fresh Install**:
+> 1. **Gradle Configuration Cache Poisoning & Silent Unsigned APK Output (`app-release-unsigned.apk`)**:
+>    - Because `org.gradle.configuration-cache=true` is enabled in `gradle.properties` and `gradle/actions/setup-gradle@v4` shares configuration cache across CI jobs, Job 1 (`quality-and-offline-gate`) cached `System.getenv("STORE_PASSWORD")` and `System.getenv("KEY_PASSWORD")` as `null`.
+>    - When Job 2 ran `gradle :app:assembleRelease` and reused that cached configuration, Android Gradle Plugin saw `null` signing passwords, **silently skipped signing**, and output **`app-release-unsigned.apk`**.
+>    - The packaging step (`find app/build/outputs/apk/release -name "*.apk"`) matched `app-release-unsigned.apk` and renamed it to `Folio-v1.0.x-universal-release.apk`.
+>    - On Android, attempting to install an unsigned APK shows the app's icon (`F`) and name (`Folio`) and immediately aborts with **"App not installed as package appears to be invalid"** (`INSTALL_PARSE_FAILED_NO_CERTIFICATES`).
+> 2. **Mandatory Android 11–16 `zipalign` + V2/V3 APK Signature Verification**:
+>    - Modern Android versions require 4-byte aligned uncompressed `resources.arsc` (`zipalign -p 4`) and **APK Signature Scheme v2/v3** (`apksigner sign --v1-signing-enabled true --v2-signing-enabled true --v3-signing-enabled true`), plus `android:extractNativeLibs="true"` for multi-ABI native libraries (`CameraX` / `PdfBox-Android`).
 
-- **Confirmed Decision 1 — Upgrade CI to JDK 21 & Harden Robolectric Runtime**: Upgrade `actions/setup-java@v4` to **Temurin JDK 21** across both CI and Release workflows, and configure `testOptions.unitTests.all` with `--add-opens` JVM arguments, `java.awt.headless=true`, and deterministic Robolectric properties.
-- **Confirmed Decision 2 — Full Console Stack Traces & GitHub Step Summary**: Enable `TestExceptionFormat.FULL` (`showExceptions`, `showCauses`, `showStackTraces`, `showStandardStreams`) in Gradle and publish a Markdown JUnit summary table directly to `$GITHUB_STEP_SUMMARY` on every run.
+- **Confirmed Decision 1 — Fresh Install Compatibility & Explicit `zipalign` + `apksigner` Gate**: Build the release APK with `--no-configuration-cache`, run explicit Android SDK `zipalign -p -f 4` and `apksigner sign` (enabling V1, V2, and V3 signature schemes), and enforce a mandatory `apksigner verify --verbose --print-certs` gate before uploading.
+- **Confirmed Decision 2 — APK-Only Release Pipeline**: Remove `.aab` bundle generation and publish only the verified, V1+V2+V3 signed `Folio-vX.Y.Z-universal-release.apk` and `SHA256SUMS.txt` to GitHub Releases.
 
 ---
 
 ## 1. Overview & Core Concept
 
-- **What It Does**: Eliminates the Robolectric runner initialization failure on GitHub Actions `ubuntu-latest` runners so all unit and Robolectric tests (`ExampleUnitTest` + `ExampleRobolectricTest`) execute and pass deterministically in CI, while printing full test execution logs and a Markdown summary table in the GitHub Actions UI.
-- **Target Audience / Persona**: Maintainers and contributors running automated CI checks and tag-based releases on GitHub Actions.
-- **Key Value**: Ensures zero-friction green builds on GitHub Actions and immediate visibility into test execution results without downloading HTML report archives.
+- **What It Does**: Guarantees that every `Folio-vX.Y.Z-universal-release.apk` published to GitHub Releases is 4-byte page-aligned (`zipalign`), cryptographically signed with **APK Signature Schemes v1, v2, and v3** (`apksigner`), verified with `apksigner verify` and `aapt2 dump badging`, and compatible with all Android 8.0–16+ devices on both fresh installs and over-the-top updates.
+- **Target Audience / Persona**: Android users downloading and installing `Folio-vX.Y.Z-universal-release.apk` directly on their phones from GitHub Releases.
+- **Key Value**: Permanently prevents unsigned, unaligned, or certificate-mismatched APKs from ever being published to GitHub Releases.
 
 ---
 
-## 2. User Experience & Visual Design (CI Console & Step Summary UX)
+## 2. User Experience & Visual Design (Android Package Installer & Release UX)
 
-### Key Developer Flows
-1. **Live Console Output in GitHub Actions**:
-   - Each test method prints its individual status (`PASSED`, `SKIPPED`, `FAILED`) in real time in the Step 2 console log.
-   - If any assertion ever fails in the future, Gradle prints the exact line number, expected vs. actual values, and full causal stack trace right in the workflow log.
-2. **GitHub Actions Step Summary Table (`$GITHUB_STEP_SUMMARY`)**:
-   - At the end of the test step (`if: always()`), the workflow parses the JUnit XML reports and renders a clean summary table directly on the GitHub Actions workflow run page showing total tests, passed count, failed count, execution time, and any failure details.
+### Key User Flows
+1. **Fresh APK Download & Install on Android Phone**:
+   - User downloads `Folio-vX.Y.Z-universal-release.apk` from GitHub Releases and taps it in their browser or Files app.
+   - Android Package Installer verifies the V2/V3 signature block, 4-byte resource alignment, and native library extraction cleanly, installs **Folio**, and displays the **Open** button.
+2. **Seamless Over-the-Top Version Updates**:
+   - Even if `RELEASE_KEYSTORE_BASE64` is not yet configured in GitHub Secrets, the pipeline uses the repository's consistent signing certificate rather than generating a new random key on every run, ensuring v1.0.2 installs cleanly over v1.0.1 without signature conflict errors.
 
 ---
 
 ## 3. Key Product Decisions & Trade-Offs
 
-- **Decision 1: Temurin JDK 21 in GitHub Actions + JVM Module Opens in Gradle**
-  - *Chosen Approach*: Set `java-version: "21"` in `.github/workflows/android-ci.yml` and `.github/workflows/android-release.yml`, and configure `unitTests.all` in Gradle with `--add-opens=java.base/java.lang=ALL-UNNAMED`, `--add-opens=java.base/java.util=ALL-UNNAMED`, `--add-opens=java.base/java.io=ALL-UNNAMED`, and `-Djava.awt.headless=true`.
-  - *Why*: Android SDK 35/36 `android-all` JARs used by Robolectric 4.16 are compiled targeting JDK 21 (class file version 65.0) and use deep reflection on `java.base` internals. Providing JDK 21 + `--add-opens` ensures 100% compatibility on both local and cloud runners.
+- **Decision 1: Explicit Android SDK `zipalign` + `apksigner` Post-Build Pipeline (`scripts/sign_and_verify_apk.sh`)**
+  - *Chosen Approach*: After running `gradle :app:assembleRelease --no-configuration-cache`, run a dedicated script that locates `zipalign` and `apksigner` in `$ANDROID_HOME/build-tools`, performs 4-byte page alignment (`zipalign -p -f 4`), signs the APK with `apksigner sign` (`--v1-signing-enabled true --v2-signing-enabled true --v3-signing-enabled true`), and verifies the resulting binary with `apksigner verify --verbose --print-certs` and `zipalign -c 4`.
+  - *Why*: Eliminates any possibility of Gradle configuration cache skipping the signing task or producing an `app-release-unsigned.apk` that gets renamed and uploaded.
 
-- **Decision 2: Self-Contained File I/O in Robolectric PDF Tests**
-  - *Chosen Approach*: Ensure `ExampleRobolectricTest` initializes PDFBox and uses isolated temporary directories with explicit cleanup and assertions, avoiding any dependency on external system fonts or display servers on headless Linux runners.
-  - *Why*: Prevents flaky I/O or graphics state across parallel test workers on `ubuntu-latest`.
+- **Decision 2: Enable `android:extractNativeLibs="true"` in `AndroidManifest.xml`**
+  - *Chosen Approach*: Add `android:extractNativeLibs="true"` to the `<application>` tag in `AndroidManifest.xml`.
+  - *Why*: Prevents `INSTALL_FAILED_INVALID_APK: Failed to extract native libraries` on devices with strict zip page-alignment enforcement when bundling CameraX and PdfBox native libraries.
+
+- **Decision 3: APK-First Streamlined Release Pipeline**
+  - *Chosen Approach*: Remove `:app:bundleRelease` (`.aab`) from `.github/workflows/android-release.yml` so the build is faster and publishes only `Folio-vX.Y.Z-universal-release.apk` and `SHA256SUMS.txt`.
+  - *Why*: Matches your distribution focus on direct APK installation via GitHub Releases.
 
 ---
 
 ## 4. Technical Architecture & Data Strategy *(Technical Reference)*
 
-### CI Test Execution & Diagnostic Pipeline Diagram
+### APK Build, Alignment, Signing & Verification Pipeline Diagram
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│                   GITHUB ACTIONS RUNNER (ubuntu-latest)                     │
-│   • actions/setup-java@v4 ──▶ Temurin JDK 21 (Class File v65.0 Support)     │
-│   • gradle/actions/setup-gradle@v4 ──▶ Gradle 9.3.1 + AGP 9.1.1             │
+│             STAGE 1: GRADLE RELEASE APK COMPILATION                         │
+│   • gradle :app:assembleRelease --no-configuration-cache                    │
+│   • AndroidManifest.xml: android:extractNativeLibs="true"                   │
 └──────────────────────────────────────┬──────────────────────────────────────┘
                                        │
                                        ▼
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│                GRADLE UNIT TEST HARNESS (:app:testDebugUnitTest)            │
-│   • isIncludeAndroidResources = true                                        │
-│   • isReturnDefaultValues = true                                            │
-│   • JVM Args: -Xmx2g, -Djava.awt.headless=true, --add-opens=java.base/...   │
-│   • TestLogging: FULL stack traces, causes, stdout/stderr in console        │
-└──────────────────┬───────────────────────────────────────┬──────────────────┘
-                   │                                       │
-                   ▼                                       ▼
-┌─────────────────────────────────────┐ ┌─────────────────────────────────────┐
-│        ExampleUnitTest (3)          │ │     ExampleRobolectricTest (4)      │
-│ • Format Detection (18 formats)     │ │ • Offline Manifest & App Name Audit │
-│ • Page Range Parser                 │ │ • Non-Destructive PDF Merge/Rotate  │
-│ • 31-Tool Registry Verification     │ │ • AES-256-GCM Vault Round-Trip      │
-│                                     │ │ • Runtime Release Integrity Audit   │
-└──────────────────┬──────────────────┘ └──────────────────┬──────────────────┘
-                   │                                       │
-                   └───────────────────┬───────────────────┘
+│        STAGE 2: ANDROID SDK ZIPALIGN & APKSIGNER (V1 + V2 + V3)             │
+│   1. Locate latest Android SDK Build-Tools (zipalign, apksigner, aapt2)     │
+│   2. Run `zipalign -p -f -v 4 raw.apk aligned.apk`                          │
+│   3. Run `apksigner sign --v1-signing-enabled true                          │
+│                          --v2-signing-enabled true                          │
+│                          --v3-signing-enabled true`                         │
+│      ──▶ Outputs `dist/Folio-vX.Y.Z-universal-release.apk`                  │
+└──────────────────────────────────────┬──────────────────────────────────────┘
+                                       │
                                        ▼
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│              GITHUB STEP SUMMARY & ARTIFACT REPORTER (if: always)           │
-│   • Parses TEST-*.xml and prints Passed/Failed Markdown Table to Summary    │
-│   • Uploads full HTML & XML report bundle if any diagnostic inspection needed│
+│          STAGE 3: HARD CRYPTOGRAPHIC & BINARY VERIFICATION GATE             │
+│   • `zipalign -c 4 Folio-vX.Y.Z-universal-release.apk` (Verify Alignment)   │
+│   • `apksigner verify --verbose --print-certs` (Verify V1+V2+V3 Signatures) │
+│   • `aapt2 dump badging` (Verify Package Name, VersionCode, Min/Target SDK) │
+│   • `aapt2 dump permissions` (Verify 0 Network Permissions / 100% Offline)  │
+└──────────────────────────────────────┬──────────────────────────────────────┘
+                                       │
+                                       ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                STAGE 4: GITHUB RELEASE & CHECKSUM PUBLISHER                 │
+│   • Generate `dist/SHA256SUMS.txt` for `Folio-vX.Y.Z-universal-release.apk` │
+│   • Publish verified APK + SHA256SUMS.txt + Changelog to GitHub Releases    │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
 ### Interactive Component & State Mapping
 
-1. **Gradle Test Harness Configuration**:
-   - Configures `testOptions.unitTests` with `isIncludeAndroidResources = true`, `isReturnDefaultValues = true`, and `all { ... }` block enabling `TestExceptionFormat.FULL` and required JDK 21 `--add-opens` flags.
-2. **GitHub Actions Workflows (`android-ci.yml` & `android-release.yml`)**:
-   - Upgrades `actions/setup-java@v4` from `java-version: "17"` to `java-version: "21"`.
-   - Adds an automated JUnit XML summary step (`if: always()`) that outputs every test suite's result and any failure stack trace directly into `$GITHUB_STEP_SUMMARY` and the workflow console log.
+1. **Manifest Native Library Extraction (`AndroidManifest.xml`)**:
+   - Sets `android:extractNativeLibs="true"` on the `<application>` element so all Android versions cleanly extract bundled native libraries during package installation.
+2. **Dedicated Signing & Verification Script (`scripts/sign_and_verify_apk.sh`)**:
+   - Resolves `zipalign`, `apksigner`, and `aapt2` from `$ANDROID_HOME/build-tools` or `$ANDROID_SDK_ROOT/build-tools`.
+   - Aligns, signs (`V1 + V2 + V3`), and cryptographically verifies the APK, failing the build immediately if any signature scheme or alignment check is missing.
+3. **Streamlined APK-Only Release Workflow (`.github/workflows/android-release.yml`)**:
+   - Runs `gradle :app:assembleRelease --no-configuration-cache`, invokes `scripts/sign_and_verify_apk.sh`, audits zero network permissions via `scripts/verify_offline_release.sh`, generates `SHA256SUMS.txt`, and publishes `Folio-vX.Y.Z-universal-release.apk` to GitHub Releases.

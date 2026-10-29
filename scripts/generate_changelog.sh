@@ -28,7 +28,9 @@ ALL_COMMITS=$(git log -n 25 "$COMMIT_RANGE" --pretty=format:"- %s (\`%h\`)" || t
 cat > "$OUTPUT_FILE" <<EOF
 # Folio ${VERSION_TAG} — Universal Offline Document Reader & PDF Studio
 
-> **100% Offline Privacy Attestation**: This release of **Folio** was automatically built, tested, and audited by GitHub Actions. The compiled APK binary has been verified via \`aapt2 dump permissions\` to contain **zero network permissions** (\`INTERNET\` and \`ACCESS_NETWORK_STATE\` are completely stripped).
+> **100% Offline & Cryptographically Verified APK Attestation**:
+> - **APK Signature Schemes v1 + v2 + v3 Verified**: 4-byte aligned (\`zipalign -c 4\`) and verified with \`apksigner verify\` for seamless installation on Android 8.0 through Android 16+.
+> - **Zero Network Permissions**: Audited via \`aapt2 dump permissions\` to contain **zero network permissions** (\`INTERNET\` and \`ACCESS_NETWORK_STATE\` are completely stripped).
 
 ## Highlights in ${VERSION_TAG} (${RANGE_LABEL})
 
@@ -68,9 +70,10 @@ cat >> "$OUTPUT_FILE" <<EOF
 
 ---
 
-## SHA-256 Checksums & Verification
+## Direct Android Installation & SHA-256 Verification
 
-Verify your downloaded file before installing:
+1. Download **\`Folio-${VERSION_TAG}-universal-release.apk\`** below and open it on your Android device to install.
+2. *(Optional)* Verify the SHA-256 checksum before installing:
 
 \`\`\`bash
 sha256sum -c SHA256SUMS.txt

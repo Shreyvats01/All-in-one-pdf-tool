@@ -51,7 +51,9 @@ jobs:
 
       - name: Ensure Debug Keystore Exists
         run: |
-          if [[ ! -f "debug.keystore" ]]; then
+          if [[ ! -f "debug.keystore" && -f "debug.keystore.base64" ]]; then
+            base64 --decode debug.keystore.base64 > debug.keystore
+          elif [[ ! -f "debug.keystore" ]]; then
             keytool -genkeypair -v \
               -keystore debug.keystore \
               -storepass android \
@@ -81,7 +83,7 @@ jobs:
         run: gradle :app:lintDebug --stacktrace
 
   build-sign-and-release:
-    name: 2. Auto-Version, Build Signed APK/AAB & Publish GitHub Release
+    name: 2. Auto-Version, Build, V1+V2+V3 Sign & Publish Universal APK
     needs: quality-and-offline-gate
     runs-on: ubuntu-latest
     timeout-minutes: 35
@@ -113,8 +115,6 @@ jobs:
           elif [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
             RAW_VER="${GITHUB_REF_NAME}"
           else
-            # Automatic release on push to main/master:
-            # Find latest vX.Y.Z tag or start from 1.0.<RUN_NUM>
             LATEST_TAG=$(git tag -l "v[0-9]*.[0-9]*.[0-9]*" --sort=-v:refname | head -n 1 || true)
             LAST_MSG=$(git log -1 --pretty=%B || true)
 
@@ -138,7 +138,6 @@ jobs:
               fi
               RAW_VER="${MAJ}.${MIN}.${PAT}"
 
-              # Ensure tag uniqueness if tag already exists
               if git rev-parse "v${RAW_VER}" >/dev/null 2>&1; then
                 RAW_VER="${MAJ}.${MIN}.${RUN_NUM}"
               fi
@@ -176,7 +175,9 @@ jobs:
           RELEASE_STORE_PASSWORD: ${{ secrets.RELEASE_STORE_PASSWORD }}
           RELEASE_KEY_PASSWORD: ${{ secrets.RELEASE_KEY_PASSWORD }}
         run: |
-          if [[ ! -f "debug.keystore" ]]; then
+          if [[ ! -f "debug.keystore" && -f "debug.keystore.base64" ]]; then
+            base64 --decode debug.keystore.base64 > debug.keystore
+          elif [[ ! -f "debug.keystore" ]]; then
             keytool -genkeypair -v \
               -keystore debug.keystore \
               -storepass android \
@@ -189,60 +190,81 @@ jobs:
           fi
 
           KEYSTORE_FILE="${GITHUB_WORKSPACE}/my-upload-key.jks"
-          if [[ -n "$RELEASE_KEYSTORE_BASE64" ]]; then
+          rm -f "$KEYSTORE_FILE"
+
+          if [[ -n "$RELEASE_KEYSTORE_BASE64" && -n "$RELEASE_STORE_PASSWORD" ]]; then
             echo "Decoding production release keystore from GitHub Secrets..."
             echo "$RELEASE_KEYSTORE_BASE64" | base64 --decode > "$KEYSTORE_FILE"
-            echo "KEYSTORE_PATH=${KEYSTORE_FILE}" >> "$GITHUB_ENV"
-            echo "STORE_PASSWORD=${RELEASE_STORE_PASSWORD}" >> "$GITHUB_ENV"
-            echo "KEY_PASSWORD=${RELEASE_KEY_PASSWORD}" >> "$GITHUB_ENV"
+            FINAL_STORE_PASS="$RELEASE_STORE_PASSWORD"
+            FINAL_KEY_PASS="${RELEASE_KEY_PASSWORD:-$RELEASE_STORE_PASSWORD}"
+          elif [[ -f "debug.keystore" ]]; then
+            echo "Using repository deterministic certificate cloned to alias 'upload' for consistent release signing across versions..."
+            FINAL_STORE_PASS="android"
+            FINAL_KEY_PASS="android"
+            keytool -importkeystore \
+              -srckeystore debug.keystore \
+              -srcstorepass android \
+              -srcalias androiddebugkey \
+              -srckeypass android \
+              -destkeystore "$KEYSTORE_FILE" \
+              -deststorepass "$FINAL_STORE_PASS" \
+              -destalias upload \
+              -destkeypass "$FINAL_KEY_PASS" \
+              -noprompt
           else
-            echo "::warning::RELEASE_KEYSTORE_BASE64 secret is not configured. Generating an ephemeral release keystore for alias 'upload' so the automatic release succeeds."
-            EPHEMERAL_PASS="folio_release_pass_2026"
+            echo "::warning::Generating fallback release keystore for alias 'upload'."
+            FINAL_STORE_PASS="folio_release_pass_2026"
+            FINAL_KEY_PASS="folio_release_pass_2026"
             keytool -genkeypair -v \
               -keystore "$KEYSTORE_FILE" \
-              -storepass "$EPHEMERAL_PASS" \
+              -storepass "$FINAL_STORE_PASS" \
               -alias upload \
-              -keypass "$EPHEMERAL_PASS" \
+              -keypass "$FINAL_KEY_PASS" \
               -keyalg RSA \
               -keysize 2048 \
               -validity 10000 \
               -dname "CN=Folio Offline Release,OU=Mobile,O=Folio,C=US"
-            echo "KEYSTORE_PATH=${KEYSTORE_FILE}" >> "$GITHUB_ENV"
-            echo "STORE_PASSWORD=${EPHEMERAL_PASS}" >> "$GITHUB_ENV"
-            echo "KEY_PASSWORD=${EPHEMERAL_PASS}" >> "$GITHUB_ENV"
           fi
 
-      - name: Build Signed Release APK & Play Store App Bundle (AAB)
-        run: |
-          gradle :app:assembleRelease :app:bundleRelease --stacktrace
+          echo "KEYSTORE_PATH=${KEYSTORE_FILE}" >> "$GITHUB_ENV"
+          echo "STORE_PASSWORD=${FINAL_STORE_PASS}" >> "$GITHUB_ENV"
+          echo "KEY_PASSWORD=${FINAL_KEY_PASS}" >> "$GITHUB_ENV"
 
-      - name: Audit Compiled Release APK Binary for Zero Network Permissions
+      - name: Compile Universal Release APK (Bypass Configuration Cache Poisoning)
         run: |
-          chmod +x scripts/verify_offline_release.sh
-          RELEASE_APK=$(find app/build/outputs/apk/release -name "*.apk" | head -n 1)
-          if [[ -z "$RELEASE_APK" ]]; then
-            echo "[ERROR] Signed release APK was not found in app/build/outputs/apk/release"
-            exit 1
-          fi
-          bash scripts/verify_offline_release.sh "$RELEASE_APK"
+          gradle :app:assembleRelease --no-configuration-cache --stacktrace
 
-      - name: Package Artifacts & Generate SHA-256 Checksums
+      - name: Align (zipalign 4-byte), Sign (V1+V2+V3 apksigner) & Verify Universal APK
         run: |
           mkdir -p dist
-          RELEASE_APK=$(find app/build/outputs/apk/release -name "*.apk" | head -n 1)
-          RELEASE_AAB=$(find app/build/outputs/bundle/release -name "*.aab" | head -n 1)
+          RAW_APK=$(find app/build/outputs/apk/release -name "*.apk" | head -n 1)
+          if [[ -z "$RAW_APK" ]]; then
+            echo "[ERROR] No release APK found in app/build/outputs/apk/release"
+            exit 1
+          fi
 
           TARGET_APK="dist/Folio-v${VERSION_NAME}-universal-release.apk"
-          TARGET_AAB="dist/Folio-v${VERSION_NAME}-release.aab"
+          chmod +x scripts/sign_and_verify_apk.sh
+          bash scripts/sign_and_verify_apk.sh \
+            "$RAW_APK" \
+            "$TARGET_APK" \
+            "$KEYSTORE_PATH" \
+            "upload" \
+            "$STORE_PASSWORD" \
+            "$KEY_PASSWORD"
 
-          cp "$RELEASE_APK" "$TARGET_APK"
-          cp "$RELEASE_AAB" "$TARGET_AAB"
+      - name: Audit Signed Release APK Binary for 100% Offline Compliance
+        run: |
+          chmod +x scripts/verify_offline_release.sh
+          TARGET_APK="dist/Folio-v${VERSION_NAME}-universal-release.apk"
+          bash scripts/verify_offline_release.sh "$TARGET_APK"
 
+      - name: Generate SHA-256 Checksum for Signed Universal APK
+        run: |
           (
             cd dist
-            sha256sum "Folio-v${VERSION_NAME}-universal-release.apk" "Folio-v${VERSION_NAME}-release.aab" > SHA256SUMS.txt
+            sha256sum "Folio-v${VERSION_NAME}-universal-release.apk" > SHA256SUMS.txt
           )
-
           cat dist/SHA256SUMS.txt
 
       - name: Generate Categorized Release Changelog
@@ -251,13 +273,12 @@ jobs:
           bash scripts/generate_changelog.sh "${TAG_NAME}" "dist" "dist/RELEASE_NOTES.md"
           cat dist/RELEASE_NOTES.md
 
-      - name: Upload Build Artifacts to Workflow Summary
+      - name: Upload Verified Universal APK to Workflow Summary
         uses: actions/upload-artifact@v4
         with:
-          name: Folio-${{ steps.semver.outputs.tag_name }}-Release-Bundle
+          name: Folio-${{ steps.semver.outputs.tag_name }}-Universal-APK
           path: |
             dist/Folio-v*-universal-release.apk
-            dist/Folio-v*-release.aab
             dist/SHA256SUMS.txt
             dist/RELEASE_NOTES.md
 
@@ -273,9 +294,8 @@ jobs:
           generate_release_notes: false
           files: |
             dist/Folio-v${{ steps.semver.outputs.version_name }}-universal-release.apk
-            dist/Folio-v${{ steps.semver.outputs.version_name }}-release.aab
             dist/SHA256SUMS.txt
 
-      - name: Clean Up Ephemeral Keystore File
+      - name: Clean Up Keystore File
         if: always()
         run: rm -f "${GITHUB_WORKSPACE}/my-upload-key.jks"

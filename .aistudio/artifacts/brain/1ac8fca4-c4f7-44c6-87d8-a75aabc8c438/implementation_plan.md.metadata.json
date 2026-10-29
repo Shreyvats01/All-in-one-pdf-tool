@@ -1,6 +1,6 @@
 {
-  "summary":  "Implementation plan to resolve the GitHub Actions '4 tests completed, 1 failed' error in :app:testDebugUnitTest by upgrading the CI runtime to JDK 21 (required by Gradle 9.3.1, AGP 9.1.1, and Robolectric 4.16.1 Android SDK 36 bytecode), configuring JVM module opens and headless flags for Robolectric, and enabling FULL stack trace logging plus GitHub Actions Step Summary reporting.",
-  "updatedAt":  "2026-10-28T14:47:48.787751776Z",
+  "summary":  "Implementation plan to fix the 'App not installed as package appears to be invalid' error on fresh APK installs from GitHub Releases by disabling configuration-cache poisoning of release signing variables, adding a dedicated Android SDK zipalign + apksigner (V1+V2+V3) signing and verification script, setting extractNativeLibs=true in AndroidManifest.xml, using a deterministic fallback keystore across releases, and streamlining the pipeline to publish only the verified Universal APK and SHA-256 checksums.",
+  "updatedAt":  "2026-10-29T01:46:56.500028392Z",
   "requestFeedback":  true,
   "userFacing":  true
 }
