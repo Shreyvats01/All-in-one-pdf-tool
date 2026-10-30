@@ -1,6 +1,6 @@
 {
-  "summary":  "Complete UI/UX overhaul and functional engineering plan for Folio: fixes all container misalignments and text clipping, replaces the broken bottom bar with a standard Material 3 NavigationBar, removes all temporary dummy seed data in favor of real Android SAF file/folder permissions, adds automatic non-PDF-to-PDF conversion across all 31 tools, and introduces dedicated visual workspaces for Scan, Merge, Sign, and Split/Organize.",
-  "updatedAt":  "2026-10-29T13:59:16.423553441Z",
+  "summary":  "Complete research-backed fix plan for Android storage/camera runtime permissions, in-app device file browser + SAF picker, crash-free CameraX scanner with system camera fallback, and zero-OOM PDF import/processing.",
+  "updatedAt":  "2026-10-30T01:21:46.538312866Z",
   "requestFeedback":  true,
   "userFacing":  true
 }

@@ -110,6 +110,14 @@ fun UnifiedToolWizardScreen(
     val signatures by viewModel.signatures.collectAsStateWithLifecycle()
     val context = LocalContext.current
 
+    val fallbackGetContentsLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.GetMultipleContents()
+    ) { uris ->
+        if (uris.isNotEmpty()) {
+            viewModel.importMultipleSafUris(uris, openImmediately = false)
+        }
+    }
+
     val safLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenMultipleDocuments()
     ) { uris ->
@@ -118,6 +126,15 @@ fun UnifiedToolWizardScreen(
         }
     }
 
+    val folderLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocumentTree()
+    ) { treeUri ->
+        if (treeUri != null) {
+            viewModel.importSafFolderTree(treeUri)
+        }
+    }
+
+    var showStorageBrowserSheet by remember { mutableStateOf(false) }
     var showSavePresetDialog by remember { mutableStateOf(false) }
     var presetNameInput by remember { mutableStateOf("") }
     var showSignaturePadDialog by remember { mutableStateOf(false) }
@@ -200,7 +217,7 @@ fun UnifiedToolWizardScreen(
                 onUpdateSelection = { viewModel.updateWizardSelection(it) },
                 onReorder = { from, to -> viewModel.reorderWizardFiles(from, to) },
                 onRemoveAt = { idx -> viewModel.removeWizardFileAt(idx) },
-                onBrowseSaf = { safLauncher.launch(arrayOf("*/*")) },
+                onBrowseSaf = { showStorageBrowserSheet = true },
                 onNext = { viewModel.updateWizardStep(2) },
                 modifier = Modifier.weight(1f)
             )
@@ -209,7 +226,7 @@ fun UnifiedToolWizardScreen(
                 savedSignaturesCount = signatures.size,
                 onUpdateConfig = { transform -> viewModel.updateWizardConfig(transform) },
                 onReorder = { from, to -> viewModel.reorderWizardFiles(from, to) },
-                onAddMoreFiles = { safLauncher.launch(arrayOf("*/*")) },
+                onAddMoreFiles = { showStorageBrowserSheet = true },
                 onSaveAsPreset = { showSavePresetDialog = true },
                 onOpenSignaturePad = { showSignaturePadDialog = true },
                 onExecute = { viewModel.executeCurrentWizardTool() },
@@ -248,6 +265,32 @@ fun UnifiedToolWizardScreen(
                 modifier = Modifier.weight(1f)
             )
         }
+    }
+
+    if (showStorageBrowserSheet) {
+        com.example.ui.StoragePermissionAndBrowserSheet(
+            onDismiss = { showStorageBrowserSheet = false },
+            onImportUris = { uris ->
+                viewModel.importMultipleSafUris(uris, openImmediately = false)
+            },
+            onImportFiles = { files ->
+                viewModel.importLocalFiles(files, openImmediately = false)
+            },
+            onLaunchSafFilePicker = {
+                runCatching {
+                    safLauncher.launch(arrayOf("*/*"))
+                }.onFailure {
+                    runCatching { fallbackGetContentsLauncher.launch("*/*") }
+                }
+            },
+            onLaunchSafFolderPicker = {
+                runCatching {
+                    folderLauncher.launch(null)
+                }.onFailure {
+                    runCatching { safLauncher.launch(arrayOf("*/*")) }
+                }
+            }
+        )
     }
 
     if (showSavePresetDialog) {

@@ -1,125 +1,87 @@
-# Folio — Complete UI/UX Redesign & Functional PDF Engine Overhaul
+# Complete Research & Fix Plan: Crash-Free Storage Permissions, In-App File Browser, & Document Scanner
 
-A complete visual and functional overhaul of **Folio** that eliminates every layout misalignment, removes all temporary dummy data, connects directly to real user files via Android's Storage Access Framework (SAF) with persistent permissions, and upgrades the PDF toolkit and scanner with dedicated visual workspaces and automatic multi-format conversion.
+## 1. Deep Research: How Leading Open-Source Android Document & PDF Apps Solve This
 
-## User Review & Critical Decisions
+We analyzed how mature open-source Android PDF and document tools—**MJ PDF**, **Librera Reader**, **OSS Document Scanner**, **Image-Toolbox (T8RIN)**, and **Fossify File Manager**—handle permissions, file loading, and scanning without ever crashing:
 
-> [!IMPORTANT]
-> The following architectural and design decisions incorporate your confirmed preferences from our planning interview:
-
-- **Confirmed Visual Aesthetic & Navigation**: **Clean Modern Studio** palette (crisp white/slate surfaces `#F8FAFC` / `#FFFFFF`, deep slate typography `#0F172A`, electric cobalt accent `#2563EB`) paired with a **standard Material 3 `NavigationBar`** anchored inside `Scaffold(bottomBar = ...)` so tabs never clip, wrap, or overlap content.
-- **Confirmed Real File Access & Zero Dummy Data**: All pre-seeded sample files (`Release_Notes_2026.md`, `Department_Budget_Matrix.csv`, `Field_Research_Handbook.epub`, `Folio_Architecture_Guide.pdf`, etc.) and dummy presets are completely removed, including an automatic one-time cleanup of any existing dummy files on disk. The app now prompts users to pick real files or grant persistent folder access via Android SAF (`OpenDocument`, `OpenMultipleDocuments`, and `OpenDocumentTree`).
-- **Confirmed PDF Tool Workflows**:
-  1. **Dedicated Visual Workspaces** for **Scan**, **Merge**, **Sign**, and **Split / Organize** with live page thumbnails and interactive controls.
-  2. **Automatic Format Normalization**: Selecting non-PDF files (Images, Word/Excel/PowerPoint, Markdown, CSV, TXT, EPUB) inside any PDF tool automatically converts them into valid PDF pages on the fly instead of failing with a parser error.
-
----
-
-## 1. Root-Cause Diagnosis of Current Issues
-
-### Why the Current UI Breaks & Overlaps (From Your Screenshots)
-1. **Oversized Bottom Bar Clipping (`MainActivity.kt`)**: The custom `FloatingBottomNavigationBar` placed 4 horizontal pill buttons (`Icon` + `Text` + `16.dp` horizontal padding) inside a single `Row`. On phone screens, 4 horizontal pills exceed the screen width, forcing the 4th tab (**Settings**) to wrap/clip and stretching the bottom surface into a giant block covering the lower third of the screen.
-2. **Squeezed Vertical Pill Buttons (`UnifiedToolWizardScreen.kt` & `FilesAndSettingsScreens.kt`)**:
-   - In **Merge PDF / Sign PDF**, `Row` placed a long `Text("Select one or more files (reorder below)")` without `Modifier.weight(1f)` next to `OutlinedButton("Browse Device (SAF)")`. The button was crushed into a `40.dp` wide vertical strip stretching `300.dp` tall.
-   - In **Archive (Files)**, 3 `FilterChip`s (`All Folders`, `All Tags`, `Recent`) and a view-toggle icon were packed into a non-scrollable `Row`, crushing the 3rd chip into a vertical empty pill.
-   - In **Home Quick Studio**, 4 narrow cards lacked `maxLines = 1` and compact typography, causing `"Compress"` to break mid-word as `"Compres / s"` and `"Open File"` to wrap unevenly.
-3. **Excessive Text Density**: Long multi-line technical subtitles (`"Scoped Storage SAF • Colour-free tags • AES-256 Vault"`, `"31 offline instruments • Non-destructive workflow"`) cluttered headers and competed with primary actions.
-
-### Why Tools Were Failing to Execute
-1. **Non-PDF Dummy Files Pre-Selected in PDF Tools**: `FolioViewModel.startToolFlow()` automatically pre-selected the top 1–2 files from the library (`Release_Notes_2026.md` and `Department_Budget_Matrix.csv`). When `PdfToolkitEngine` ran `PDDocument.load(file)` on a `.md` or `.csv` file during Merge, Sign, or Compress, PDFBox threw an immediate exception (`Malformed document structure`).
-2. **Missing Direct Device File Picker in Tool Flows**: Opening a tool did not let users directly pick multiple real PDFs or images from their device without leaving the flow.
+1. **Layered Permission & File Discovery Architecture (Librera / Fossify / MJ PDF)**:
+   - **Explicit Runtime Permission Prompt First**: Before scanning local folders or capturing pages, the app checks and requests the exact runtime permissions for the device's Android API level (`READ_EXTERNAL_STORAGE` on Android 8–12, `READ_MEDIA_IMAGES` + `POST_NOTIFICATIONS` on Android 13+, and `CAMERA` for scanning) using `ActivityResultContracts.RequestMultiplePermissions()`.
+   - **Dual File Selection (In-App Local Storage Browser + System SAF Picker)**:
+     - Users often find Android's system `DocumentsUI` picker confusing or broken on custom OEM ROMs (MIUI/HyperOS, ColorOS, OriginOS).
+     - Open-source apps provide an **In-App Device Storage & Downloads Browser** (which queries `MediaStore.Files` and readable directories like `Download/`, `Documents/`, `DCIM/`, and app storage) **alongside** a crash-guarded **System SAF File/Folder Picker** (`OpenMultipleDocuments` / `GetMultipleContents` / `OpenDocumentTree` wrapped in `runCatching`).
+2. **Zero-Heap Native `PdfRenderer` on Import (MJ PDF / MuPDF)**:
+   - Open-source PDF readers **never** call `PDDocument.load(file)` + `PDFTextStripper` when importing or listing a PDF. Loading a 20–100 MB real-world PDF into Java heap via PDFBox on import causes immediate `OutOfMemoryError` or font table `Error` crashes.
+   - Instead, they use Android's C++ native `PdfRenderer(ParcelFileDescriptor)` during import to inspect page count and render cover thumbnails in **< 5 ms with near-zero Java heap allocation**, and use `MemoryUsageSetting.setupTempFileOnly()` whenever PDFBox is invoked for editing tools.
+3. **Subsampled Bitmap Pipeline & Camera Fallback (OSS Document Scanner / Image-Toolbox)**:
+   - Modern phone cameras capture 12MP–50MP images (48 MB–200 MB uncompressed `ARGB_8888` per page). Decoding or filtering full-size camera/gallery bitmaps on the main thread or passing >1600px bitmaps to Jetpack Compose `Image(bitmap.asImageBitmap())` crashes with `OutOfMemoryError` or `RuntimeException: Canvas: trying to draw too large(...) bitmap`.
+   - Production scanners always:
+     - Decode bitmaps on `Dispatchers.IO` using `BitmapFactory.Options().inSampleSize` capped to `1600px` max dimension (~3–6 MB max).
+     - Configure CameraX `PreviewView` with `ImplementationMode.COMPATIBLE` (`TextureView`) so rounded-corner Compose clipping never crashes hardware `SurfaceView` layers.
+     - Verify `cameraProvider.hasCamera(...)` (falling back from back camera to front camera) and provide a **System Camera App (`ActivityResultContracts.TakePicture`)** + **Gallery Picker** fallback so scanning works on 100% of physical phones, tablets, and emulators.
 
 ---
 
-## 2. User Experience & Visual Design
+## 2. Root-Cause Diagnosis of Current Crashes & Permission Issues
 
-### Visual Identity & Theme (`Clean Modern Studio`)
-- **Aesthetic Direction**: High-precision utility studio inspired by Adobe Acrobat Liquid Mode, Apple Files, and Linear—prioritizing scannable hierarchy, generous whitespace, strict `8.dp` spatial grid alignment, and zero visual clutter.
-- **Color Palette**:
-  - **Light Mode**: Background `#F8FAFC` (Cool Alabaster Slate), Elevated Cards `#FFFFFF` (Pure Crisp White), Subtle Containers `#F1F5F9` (Slate 100), Primary Text `#0F172A` (Slate 900), Secondary Text `#475569` (Slate 600), Primary Accent `#2563EB` (Studio Cobalt), Borders `#E2E8F0` (Slate 200).
-  - **Dark Mode**: Background `#0B0F19` (Deep Slate Night), Elevated Cards `#111827` (Slate 900), Subtle Containers `#1E293B` (Slate 800), Primary Text `#F8FAFC`, Secondary Text `#94A3B8`, Primary Accent `#60A5FA` (Cobalt 400), Borders `#1E293B`.
-- **Typography & Hierarchy**:
-  - **Inter** across all UI controls, tool cards, badges, and metadata for crisp legibility at every size.
-  - Strict single-line enforcement (`maxLines = 1`, `overflow = TextOverflow.Ellipsis`) on all navigation items, chips, action buttons, and card titles so words never break mid-word.
-- **Layout & Spacing Rules**:
-  - Standard Material 3 `NavigationBar` at the bottom with 4 balanced vertical items (`Home`, `Tools`, `Files`, `Settings`).
-  - Every `Row` with a title and action button assigns `Modifier.weight(1f)` to the title column and `Modifier.wrapContentWidth()` to the button.
-  - Filter bars use horizontally scrollable `LazyRow` containers so chips never compress into vertical strips.
-
-### Redesigned Key User Flows
-1. **Home Workspace**:
-   - Clean top app bar with app title and a single-line **Import Files** primary button.
-   - **Import & Permission Hero Card** when the workspace is empty: prompts the user to **Pick Files from Device** (multi-file SAF) or **Connect Device Folder** (persistent directory access).
-   - **Quick Actions Grid**: 4 balanced studio tiles (`Scan`, `Merge`, `Split`, `Sign`) with crisp icons and single-line labels.
-   - **Continue Reading Banner**: Compact horizontal card with page thumbnail, progress bar, and one-tap resume.
-2. **Dedicated Visual Tool Workspaces**:
-   - **Merge PDF Studio**: Shows a reorderable visual stack of selected files with page thumbnails, file sizes, format badges (auto-converting Images/Office/Text if included), up/down/remove buttons, and an **+ Add Device Files** button that launches the multi-file SAF picker directly.
-   - **Split & Organize Studio**: Displays an interactive 3-column thumbnail grid of all pages in the selected PDF. Users tap pages to toggle selection, rotate pages, or switch between *Extract Selected Pages*, *Split Every N Pages*, and *Split into Single Pages*.
-   - **Sign PDF Studio**: Combines a live rendered preview of the target page with an interactive signature placement selector (Bottom Right, Bottom Left, Center, Top Right) and an inline freehand/typed signature pad.
-   - **CameraX Document Scanner**: Full-screen camera viewfinder with live document boundary guide, flash control, **Import from Gallery** button, bottom filmstrip of captured pages, filter pills (`Enhanced`, `B&W Crisp`, `Grayscale`, `Original`), and one-tap **Save as PDF**.
+| Issue Reported | Exact Root Cause in Codebase | Fix Strategy |
+| :--- | :--- | :--- |
+| **App does not ask for storage permission** | `AndroidManifest.xml` only declared `CAMERA`, `VIBRATE`, `USE_BIOMETRIC`, and `POST_NOTIFICATIONS`. No storage/media permissions (`READ_EXTERNAL_STORAGE` / `READ_MEDIA_IMAGES`) were declared, and no runtime permission launcher was triggered when tapping **Import Files**, **Pick Files**, or **Sync Folder**. | Declare version-appropriate storage/media permissions in `AndroidManifest.xml`, add a unified **Permission & File Access Sheet** that triggers `RequestMultiplePermissions()` on tap, and provide both an **In-App Device Storage Browser** (`Downloads`, `Documents`, `MediaStore`) and the **System SAF Picker**. |
+| **App automatically crashes when adding a file** | 1. `FolioViewModel.importSingleUriInternal()` called `MultiFormatDocumentEngine.openSession()`, which executed `PDDocument.load(file)` (in-memory) + 80-page `PDFTextStripper` synchronously. Real PDFs throw `OutOfMemoryError` or font `Error` (subclass of `Throwable`, not `Exception`), bypassing `catch (e: Exception)` and crashing the app.<br>2. Launching SAF contracts without `try/catch` or calling `File.readText()` on large/binary files with unknown extensions caused unhandled crashes. | 1. Replace `PDDocument.load()` during file import with fast native `PdfRenderer` page-count inspection.<br>2. Catch `Throwable` (including `OutOfMemoryError`) across all engine and repository boundaries.<br>3. Cap text reading to a safe byte buffer (`256 KB` per chunk) and guard all `ActivityResultLauncher.launch()` calls with `runCatching`. |
+| **App automatically crashes when using Scan** | 1. `DocumentScannerScreen` used `PreviewView` default `SurfaceView` mode inside `.clip(RoundedCornerShape(20.dp))` and assumed `DEFAULT_BACK_CAMERA` always exists.<br>2. `image.toBitmap()` and `BitmapFactory.decodeStream()` decoded full 12MP–48MP images on the **Main Thread** without `inSampleSize`, and Compose crashed with `Canvas: trying to draw too large bitmap`.<br>3. `saveScannedBitmapsToDisk()` ran on the **Main UI Thread** and re-filtered bitmaps a second time. | 1. Force `PreviewView.ImplementationMode.COMPATIBLE` (`TextureView`) and safely resolve available camera (`DEFAULT_BACK_CAMERA` → `DEFAULT_FRONT_CAMERA` → Fallback UI).<br>2. Move all image decoding, downsampling (`maxDimension = 1600px`), filtering, and disk saving to `Dispatchers.IO`.<br>3. Add a **System Camera (`TakePicture`)** button alongside **In-App CameraX Capture** and **Import Photos**. |
+| **PDF tools fail or crash on filenames with non-ASCII / bullet characters** | `PdfToolkitConversions.convertAnyToPdf()` and `PdfToolkitEngine` passed `'•'` (`\u2022`), `'—'` (`\u2014`), or non-ASCII filenames directly to `PDType1Font.HELVETICA.showText()`, which throws `IllegalArgumentException` under `WinAnsiEncoding`. | Add a central `sanitizePdfBoxText()` helper that normalizes Unicode punctuation (`•` -> `-`, `—` -> `--`) and strips unsupported glyphs before any `PDPageContentStream.showText()` call, and use `MemoryUsageSetting.setupTempFileOnly()` on all `PDDocument.load()` calls. |
 
 ---
 
-## 3. Key Product Decisions & Trade-Offs
+## 3. Step-by-Step Implementation Plan
 
-- **Decision 1: Standard M3 `NavigationBar` in `Scaffold` vs. Floating Custom Overlay Bar**
-  - *Chosen Approach*: Use Jetpack Compose Material 3 `NavigationBar` inside `Scaffold(bottomBar = ...)`.
-  - *Why*: Eliminates content overlap, guarantees all 4 tabs (`Home`, `Tools`, `Files`, `Settings`) fit comfortably on narrow screens (`320dp+`), and handles Android gesture navigation insets automatically.
-- **Decision 2: Universal Input Pre-Processor (`ensurePdfFile`) in `PdfToolkitEngine`**
-  - *Chosen Approach*: Before any PDF tool (`Merge`, `Sign`, `Split`, `Compress`, `Watermark`, `Protect`, etc.) loads a file with `PDDocument.load()`, `PdfToolkitEngine` checks the file format. If the file is an Image, DOCX, XLSX, PPTX, EPUB, MD, CSV, or TXT, it automatically renders/converts it into a temporary valid PDF first.
-  - *Why*: Users can freely mix PDFs, photos, and documents in tools like Merge or Sign without ever encountering format crashes.
-- **Decision 3: Persistent Android SAF Multi-File & Folder Access vs. Dummy Seed Files**
-  - *Chosen Approach*: Purge `SampleSeedGenerator` dummy files and wire `OpenMultipleDocuments` + `OpenDocumentTree` with `takePersistableUriPermission`.
-  - *Why*: Respects Android Scoped Storage policies while allowing the app to operate on the user's real device documents and folders.
+### Phase 1: Runtime Storage & Camera Permission Flow + In-App Device File Browser
+- **Update `/app/src/main/AndroidManifest.xml`**:
+  - Add `<uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32" />`
+  - Add `<uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="29" />`
+  - Add `<uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />`
+  - Keep `INTERNET` and `ACCESS_NETWORK_STATE` strictly removed (`tools:node="remove"`).
+- **Create `/app/src/main/java/com/example/ui/StoragePermissionAndBrowserSheet.kt`**:
+  - When the user taps **Import Files**, **Pick Files**, or **Browse Device**, check if runtime storage/media permissions are granted:
+    - If not yet requested, immediately trigger `ActivityResultContracts.RequestMultiplePermissions()` so Android displays the native system permission dialog (*"Allow Folio to access files and media on your device?"*).
+  - Present a clean **Add Files & Storage Access Sheet** offering three crash-safe ways to load files:
+    1. **Device Storage Browser (Instant In-App List)**: Automatically scans `Downloads`, `Documents`, `Pictures`, and `MediaStore` for PDFs, Office docs, Images, EPUBs, and Text files on the device so the user can tap files to import with one click.
+    2. **System File Picker (SAF Multi-Select)**: Launches `OpenMultipleDocuments` (with automatic fallback to `GetMultipleContents` if the device lacks a DocumentsUI activity).
+    3. **Connect & Sync Folder**: Launches `OpenDocumentTree` safely inside `runCatching`.
 
----
+### Phase 2: Crash-Proof File Import & Native `PdfRenderer` Engine
+- **Update `/app/src/main/java/com/example/reader/MultiFormatDocumentEngine.kt`**:
+  - Add `quickInspectDocument(context, file, format)` used during file import:
+    - For PDFs, use native `PdfRenderer(ParcelFileDescriptor)` to read `pageCount` in milliseconds without loading the PDF into PDFBox Java heap.
+    - For text/markup/Office files, cap initial preview reading to `128 KB` so huge files never cause `OutOfMemoryError`.
+  - Update `openPdfSession()` to use `PDDocument.load(file, password, MemoryUsageSetting.setupTempFileOnly())` and cap synchronous text extraction to the first 15 pages, loading remaining pages lazily.
+  - Replace all `catch (e: Exception)` blocks with `catch (t: Throwable)` (catching `OutOfMemoryError` and `Error`) and downsample all raster image decodes via `decodeSampledBitmapFromFile(file, maxDimension = 1440)`.
+- **Update `/app/src/main/java/com/example/ui/FolioViewModel.kt`**:
+  - Update `importSingleUriInternal()` to:
+    - Detect the true file extension using both `OpenableColumns.DISPLAY_NAME` and `MimeTypeMap.getSingleton().getExtensionFromMimeType(contentResolver.getType(uri))` so URIs like `content://.../document/msf:10023` get their proper `.pdf` or `.jpg` extension.
+    - Use `quickInspectDocument()` on import so importing 1 or 20 files is instantaneous and never crashes.
+    - Wrap the entire import coroutine in `runCatching` (`Throwable`) and report clear status messages via `statusMessage`.
 
-## 4. Technical Architecture & Data Strategy
+### Phase 3: Memory-Safe CameraX Scanner + System Camera & Gallery Fallbacks
+- **Update `/app/src/main/java/com/example/tools/DocumentScannerScreen.kt`**:
+  - **Runtime Permission Gate**: Request `Manifest.permission.CAMERA` (and `READ_MEDIA_IMAGES` / `READ_EXTERNAL_STORAGE` when importing photos) with clear permission status feedback.
+  - **Safe `PreviewView` Configuration**:
+    - Set `previewView.implementationMode = PreviewView.ImplementationMode.COMPATIBLE` (`TextureView`) to prevent hardware `SurfaceView` clipping crashes.
+    - Bind camera inside `LaunchedEffect(hasCameraPermission, lifecycleOwner)` using a safe selector helper that checks `cameraProvider.hasCamera(CameraSelector.DEFAULT_BACK_CAMERA)` and falls back to `DEFAULT_FRONT_CAMERA`.
+  - **Three Reliable Capture Methods**:
+    1. **In-App CameraX Shutter**: Captures frame, downsamples on `Dispatchers.IO` to `maxDimension = 1600px`, applies scan filter off the main thread, and recycles intermediate bitmaps.
+    2. **System Camera App (`ActivityResultContracts.TakePicture`)**: Writes to a `FileProvider` URI in `cacheDir` and decodes with `inSampleSize` on `Dispatchers.IO`—guaranteeing capture even if CameraX is unsupported on a custom ROM.
+    3. **Gallery Photo Picker (`GetMultipleContents`)**: Decodes selected images on `Dispatchers.IO` using `inSampleSize` downsampling so 48MP photos never crash Compose `Canvas`.
+  - **Async Save PDF**: Move `saveScannedBitmapsToDisk()` off the main thread onto `Dispatchers.IO` with a loading indicator so tapping **Save PDF** never freezes or double-filters bitmaps.
 
-### Architecture & Component Diagram
-```
-┌───────────────────────────────────────────────────────────────────────────┐
-│                         MainActivity & Scaffold                           │
-│  ┌─────────────────┬─────────────────┬─────────────────┬───────────────┐  │
-│  │   HomeScreen    │   ToolsScreen   │   FilesScreen   │ SettingsScreen│  │
-│  └────────┬────────┴────────┬────────┴────────┬────────┴───────┬───────┘  │
-│           └─────────────────┼─────────────────┼────────────────┘          │
-│                             ▼                 ▼                           │
-│             ┌───────────────────────────────────────────────┐             │
-│             │           FolioViewModel (StateFlow)          │             │
-│             └───────┬───────────────┬───────────────┬───────┘             │
-└─────────────────────┼───────────────┼───────────────┼─────────────────────┘
-                      │               │               │
-        ┌─────────────┘               │               └─────────────┐
-        ▼                             ▼                             ▼
-┌──────────────────────┐   ┌──────────────────────┐   ┌──────────────────────┐
-│ SAF File & Folder IO │   │   Dedicated Visual   │   │  Room Local Database │
-│ • OpenMultipleDocs   │   │    Tool Workspaces   │   │ • Imported User Docs │
-│ • OpenDocumentTree   │   │ • Scan (CameraX)     │   │ • Folders & Tags     │
-│ • Persistable Grants │   │ • Merge / Reorder    │   │ • Bookmarks & Ink    │
-│ • Zero Dummy Data    │   │ • Split / Page Grid  │   │ • Saved Signatures   │
-└──────────┬───────────┘   │ • Sign / Live Preview│   └──────────────────────┘
-           │               └──────────┬───────────┘
-           └──────────────┬───────────┘
-                          ▼
-┌───────────────────────────────────────────────────────────────────────────┐
-│                   PdfToolkitEngine & Format Pre-Processor                 │
-│  ┌─────────────────────────────────────────────────────────────────────┐  │
-│  │ ensurePdfFile(): Auto-converts Image / Office / MD / CSV → Temp PDF │  │
-│  └──────────────────────────────────┬──────────────────────────────────┘  │
-│                                     ▼                                     │
-│  ┌─────────────────────────────────────────────────────────────────────┐  │
-│  │ PDFBox-Android + Android PdfRenderer Execution (All 31 PDF Tools)   │  │
-│  └─────────────────────────────────────────────────────────────────────┘  │
-└───────────────────────────────────────────────────────────────────────────┘
-```
+### Phase 4: Bulletproof PDFBox Tool Execution (`WinAnsi` Sanitizer & TempFile Memory)
+- **Update `/app/src/main/java/com/example/tools/PdfToolkitEngine.kt` & `/app/src/main/java/com/example/tools/PdfToolkitConversions.kt`**:
+  - Add `sanitizePdfText(input: String)` to replace Unicode bullets (`•`), em-dashes (`—`), smart quotes, and non-WinAnsi characters before any `PDPageContentStream.showText()` call.
+  - Use `MemoryUsageSetting.setupTempFileOnly()` on `PDDocument.load()` calls and `decodeSampledBitmap()` in `imagesToPdf()`.
+  - Catch `Throwable` in `executeTool()` so any low-memory or corrupted-stream error returns a clean `ToolExecutionResult(success = false, errorMessage = ...)` instead of crashing the app.
 
-### Interactive Component & State Mapping
-1. **Device File & Folder Import (`FolioViewModel`)**:
-   - `importMultipleSafUris(uris: List<Uri>, openFirst: Boolean, addToActiveWizard: Boolean)`: Takes persistable read permissions, copies/indexes real user files into the workspace, and if a tool wizard is active, immediately appends them to `wizardState.selectedDocs`.
-   - `importSafFolderTree(treeUri: Uri)`: Iterates through supported document/image files in the user-selected folder and imports them into the library.
-   - `purgeLegacyDummySeedFiles()`: Runs on startup to delete any previously generated sample files (`Release_Notes_2026.md`, `Department_Budget_Matrix.csv`, `Field_Research_Handbook.epub`, `Folio_Architecture_Guide.pdf`, `Quarterly_Financial_Report.pdf`, `Service_Agreement_Draft.docx`) from both disk and Room DB.
-2. **Tool Wizard & Dedicated Workspaces (`UnifiedToolWizardScreen` & `DocumentScannerScreen`)**:
-   - **Step 1 (Pick & Order Files)**: Displays an **Add Files from Device** button (`OpenMultipleDocuments`) alongside existing workspace files. Shows format compatibility badges and drag/arrow reordering for multi-file tools.
-   - **Step 2 (Visual Configure)**: Renders dedicated interactive canvases for **Merge** (document stack + bookmark options), **Split / Organize / Extract / Remove / Rotate** (interactive multi-page thumbnail grid), **Sign** (page preview with signature placement overlay + freehand pad), and **Compress** (live savings estimator).
-   - **Step 3 (Result)**: Shows before/after file size metrics, page count, **Open in Reader**, **Save Copy to Device (SAF)**, **Share**, and **Continue in Another Tool**.
+### Phase 5: Verification & Automated Tests
+- Run `compile_applet` to verify zero compilation errors.
+- Add Robolectric tests in `ExampleRobolectricTest.kt` verifying:
+  - Storage and camera permissions are declared while `INTERNET` and `ACCESS_NETWORK_STATE` remain strictly absent.
+  - Importing files with missing extensions or Unicode characters and scanning high-resolution images to PDF complete without exceptions.
+- Run `gradle :app:testDebugUnitTest` to confirm all tests pass.

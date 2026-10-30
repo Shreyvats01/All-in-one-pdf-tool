@@ -147,5 +147,55 @@ class ExampleRobolectricTest {
         assertTrue("Signing .md file must succeed via auto-conversion: ${signResult.errorMessage}", signResult.success)
         assertTrue("Signed PDF output must exist", File(signResult.primaryOutputPath).exists())
     }
+
+    @Test
+    fun verifyUnicodeAndBulletPointsDoNotCrashPdfConversion() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        SampleSeedGenerator.ensurePdfBoxInitialized(context)
+
+        val tempDir = File(context.cacheDir, "test_unicode").apply { mkdirs() }
+        // File with non-WinAnsi characters (bullets •, em-dashes —, curly quotes “”, non-ASCII)
+        val unicodeFile = File(tempDir, "Report_•_2026_—_Final.txt").apply {
+            writeText("• Executive Summary — 2026\n• Item 1: “Smart Scan” & PDF Merge\n• Status: ✓ Completed")
+        }
+
+        val result = PdfToolkitEngine.executeTool(
+            context = context,
+            tool = PdfToolId.TEXT_WEB_TO_PDF,
+            inputFiles = listOf(unicodeFile),
+            config = ToolConfiguration()
+        )
+        assertTrue("Unicode filename and bullet text must not crash PDFBox: ${result.errorMessage}", result.success)
+        assertTrue("Generated PDF must exist", File(result.primaryOutputPath).exists())
+    }
+
+    @Test
+    fun verifyLargeCameraImageDownsamplingAndScannerSave() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        SampleSeedGenerator.ensurePdfBoxInitialized(context)
+
+        // Create a large 2400x3200 bitmap to verify downsampling and scan filter never OOM or exceed Canvas limits
+        val largeBmp = android.graphics.Bitmap.createBitmap(2400, 3200, android.graphics.Bitmap.Config.ARGB_8888)
+        val filtered = com.example.tools.applyScanFilter(
+            source = largeBmp,
+            filter = com.example.tools.ScanFilterMode.ENHANCED,
+            cropMargins = true
+        )
+        assertTrue("Filtered scan bitmap width must be downsampled <= 1600px", filtered.width <= 1600)
+        assertTrue("Filtered scan bitmap height must be downsampled <= 1600px", filtered.height <= 1600)
+
+        val savedFiles = com.example.tools.saveScannedBitmapsToDisk(context, listOf(filtered))
+        assertEquals(1, savedFiles.size)
+        assertTrue(savedFiles.first().exists())
+
+        val scanPdfResult = PdfToolkitEngine.executeTool(
+            context = context,
+            tool = PdfToolId.SCAN_TO_PDF,
+            inputFiles = savedFiles,
+            config = ToolConfiguration()
+        )
+        assertTrue("SCAN_TO_PDF must succeed: ${scanPdfResult.errorMessage}", scanPdfResult.success)
+        assertTrue(File(scanPdfResult.primaryOutputPath).exists())
+    }
 }
 

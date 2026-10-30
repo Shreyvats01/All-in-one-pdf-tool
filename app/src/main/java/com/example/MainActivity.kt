@@ -215,6 +215,16 @@ fun FolioAppRoot(
 
     val snackbarHostState = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
+    var showStorageBrowserSheet by remember { mutableStateOf(false) }
+
+    // Fallback GetMultipleContents launcher if OpenMultipleDocuments is unavailable on a stripped ROM
+    val fallbackGetContentsLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.GetMultipleContents()
+    ) { uris ->
+        if (uris.isNotEmpty()) {
+            viewModel.importMultipleSafUris(uris, openImmediately = uris.size == 1)
+        }
+    }
 
     // Multi-file SAF Picker (allows picking 1 or more files with persistent read permission)
     val safMultiDocumentLauncher = rememberLauncherForActivityResult(
@@ -231,6 +241,22 @@ fun FolioAppRoot(
     ) { treeUri ->
         if (treeUri != null) {
             viewModel.importSafFolderTree(treeUri)
+        }
+    }
+
+    val safeLaunchFilePicker: () -> Unit = {
+        runCatching {
+            safMultiDocumentLauncher.launch(arrayOf("*/*"))
+        }.onFailure {
+            runCatching { fallbackGetContentsLauncher.launch("*/*") }
+        }
+    }
+
+    val safeLaunchFolderPicker: () -> Unit = {
+        runCatching {
+            safFolderTreeLauncher.launch(null)
+        }.onFailure {
+            safeLaunchFilePicker()
         }
     }
 

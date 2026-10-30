@@ -294,10 +294,27 @@ class FolioViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    // --- SAF File & Folder Import (With Persistent User Permission Grants) ---
+    // --- SAF & Local Device File Import (Zero-OOM, MIME-aware, Crash-Safe) ---
 
     fun importSafUri(uri: Uri, openImmediately: Boolean = false, launchTool: PdfToolId? = null) {
         importMultipleSafUris(listOf(uri), openImmediately = openImmediately, launchTool = launchTool)
+    }
+
+    fun importLocalFiles(
+        files: List<File>,
+        openImmediately: Boolean = false,
+        launchTool: PdfToolId? = null
+    ) {
+        if (files.isEmpty()) return
+        viewModelScope.launch {
+            val context = getApplication<Application>()
+            val importedDocs = withContext(Dispatchers.IO) {
+                files.mapNotNull { file ->
+                    importLocalFileInternal(context, file)
+                }
+            }
+            handlePostImport(importedDocs, openImmediately, launchTool)
+        }
     }
 
     fun importMultipleSafUris(
@@ -313,25 +330,36 @@ class FolioViewModel(application: Application) : AndroidViewModel(application) {
                     importSingleUriInternal(context, uri)
                 }
             }
-            if (importedDocs.isEmpty()) return@launch
-            refreshStorageStats()
+            handlePostImport(importedDocs, openImmediately, launchTool)
+        }
+    }
 
-            if (launchTool != null) {
-                startToolFlow(launchTool, importedDocs)
-            } else if (_toolWizard.value != null) {
-                val current = _toolWizard.value!!
-                val updatedSelection = if (current.tool.acceptsMultipleFiles) {
-                    (current.selectedDocs + importedDocs).distinctBy { it.id }
-                } else {
-                    listOf(importedDocs.first())
-                }
-                _toolWizard.value = current.copy(selectedDocs = updatedSelection)
-                _statusMessage.value = "Added ${importedDocs.size} file(s) to ${current.tool.title}"
-            } else if (openImmediately && importedDocs.size == 1) {
-                openDocument(importedDocs.first())
+    private fun handlePostImport(
+        importedDocs: List<DocumentEntity>,
+        openImmediately: Boolean,
+        launchTool: PdfToolId?
+    ) {
+        if (importedDocs.isEmpty()) {
+            _statusMessage.value = "Could not import selected file. Please try another file."
+            return
+        }
+        refreshStorageStats()
+
+        if (launchTool != null) {
+            startToolFlow(launchTool, importedDocs)
+        } else if (_toolWizard.value != null) {
+            val current = _toolWizard.value!!
+            val updatedSelection = if (current.tool.acceptsMultipleFiles) {
+                (current.selectedDocs + importedDocs).distinctBy { it.id }
             } else {
-                _statusMessage.value = "Imported ${importedDocs.size} file(s) from device"
+                listOf(importedDocs.first())
             }
+            _toolWizard.value = current.copy(selectedDocs = updatedSelection)
+            _statusMessage.value = "Added ${importedDocs.size} file(s) to ${current.tool.title}"
+        } else if (openImmediately && importedDocs.size == 1) {
+            openDocument(importedDocs.first())
+        } else {
+            _statusMessage.value = "Imported ${importedDocs.size} file(s) from device"
         }
     }
 
@@ -343,31 +371,38 @@ class FolioViewModel(application: Application) : AndroidViewModel(application) {
                 context.contentResolver.takePersistableUriPermission(treeUri, takeFlags)
             }
             val importedCount = withContext(Dispatchers.IO) {
-                val rootDir = DocumentFile.fromTreeUri(context, treeUri) ?: return@withContext 0
-                val folderTitle = rootDir.name ?: "Connected Folder"
-                preferences.update {
-                    it.copy(
-                        customOutputFolderUri = treeUri.toString(),
-                        connectedFolderName = folderTitle
+                runCatching {
+                    val rootDir = DocumentFile.fromTreeUri(context, treeUri) ?: return@withContext 0
+                    val folderTitle = rootDir.name ?: "Connected Folder"
+                    preferences.update {
+                        it.copy(
+                            customOutputFolderUri = treeUri.toString(),
+                            connectedFolderName = folderTitle
+                        )
+                    }
+                    val folderEntityId = repository.createFolder(folderTitle)
+                    var count = 0
+                    val supportedExts = setOf(
+                        "pdf", "epub", "docx", "doc", "xlsx", "xls", "pptx", "ppt",
+                        "odt", "txt", "md", "csv", "html", "htm", "rtf", "cbz", "jpg", "jpeg", "png", "webp"
                     )
-                }
-                val folderEntityId = repository.createFolder(folderTitle)
-                var count = 0
-                val supportedExts = setOf(
-                    "pdf", "epub", "docx", "doc", "xlsx", "xls", "pptx", "ppt",
-                    "odt", "txt", "md", "csv", "html", "htm", "rtf", "cbz", "jpg", "jpeg", "png", "webp"
-                )
-                rootDir.listFiles().take(40).forEach { docFile ->
-                    if (docFile.isFile) {
-                        val name = docFile.name ?: return@forEach
-                        val ext = name.substringAfterLast('.', "").lowercase()
-                        if (ext in supportedExts) {
-                            val imported = importSingleUriInternal(context, docFile.uri, preferredName = name, folderId = folderEntityId)
-                            if (imported != null) count++
+                    rootDir.listFiles().take(40).forEach { docFile ->
+                        if (docFile.isFile) {
+                            val name = docFile.name ?: return@forEach
+                            val ext = name.substringAfterLast('.', "").lowercase()
+                            if (ext in supportedExts || docFile.type != null) {
+                                val imported = importSingleUriInternal(
+                                    context,
+                                    docFile.uri,
+                                    preferredName = name,
+                                    folderId = folderEntityId
+                                )
+                                if (imported != null) count++
+                            }
                         }
                     }
-                }
-                count
+                    count
+                }.getOrDefault(0)
             }
             refreshStorageStats()
             _statusMessage.value = if (importedCount > 0) {
@@ -378,53 +413,130 @@ class FolioViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    private suspend fun importLocalFileInternal(
+        context: Context,
+        sourceFile: File,
+        folderId: Long? = null
+    ): DocumentEntity? {
+        return try {
+            if (!sourceFile.exists() || sourceFile.length() <= 0L) return null
+            val displayName = sourceFile.name
+            val safeFileName = displayName.replace(Regex("[^a-zA-Z0-9._\\- ]"), "_")
+            val libDir = File(context.filesDir, "library").apply { mkdirs() }
+            val destFile = File(libDir, "${System.currentTimeMillis() % 100000}_$safeFileName")
+            sourceFile.inputStream().use { input ->
+                FileOutputStream(destFile).use { output ->
+                    input.copyTo(output, bufferSize = 32 * 1024)
+                }
+            }
+            if (!destFile.exists() || destFile.length() <= 0L) return null
+
+            val format = DocumentFormat.fromFilename(destFile.name)
+            val inspection = MultiFormatDocumentEngine.quickInspectDocument(context, destFile, format)
+            val newDoc = DocumentEntity(
+                displayName = displayName,
+                filePath = destFile.absolutePath,
+                uriString = Uri.fromFile(sourceFile).toString(),
+                formatName = format.name,
+                sizeBytes = destFile.length(),
+                pageCount = inspection.pageCount.coerceAtLeast(1),
+                folderId = folderId,
+                indexedContent = inspection.previewSnippet.take(1500)
+            )
+            val id = repository.upsertDocument(newDoc)
+            newDoc.copy(id = id)
+        } catch (_: Throwable) {
+            null
+        }
+    }
+
     private suspend fun importSingleUriInternal(
         context: Context,
         uri: Uri,
         preferredName: String? = null,
         folderId: Long? = null
     ): DocumentEntity? {
-        val contentResolver = context.contentResolver
-        runCatching {
-            contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
-        }
-        var displayName = preferredName ?: "Document_${System.currentTimeMillis() % 10000}.pdf"
-        if (preferredName == null) {
+        return try {
+            val contentResolver = context.contentResolver
             runCatching {
-                contentResolver.query(uri, null, null, null, null)?.use { cursor ->
-                    val nameIdx = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
-                    if (cursor.moveToFirst() && nameIdx >= 0) {
-                        displayName = cursor.getString(nameIdx) ?: displayName
+                contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+            var displayName = preferredName ?: ""
+            if (displayName.isBlank()) {
+                runCatching {
+                    contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { cursor ->
+                        val nameIdx = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                        if (cursor.moveToFirst() && nameIdx >= 0) {
+                            displayName = cursor.getString(nameIdx) ?: ""
+                        }
                     }
                 }
             }
-        }
-        val safeFileName = displayName.replace(Regex("[^a-zA-Z0-9._\\- ]"), "_")
-        val libDir = File(context.filesDir, "library").apply { mkdirs() }
-        val destFile = File(libDir, "${System.currentTimeMillis() % 100000}_$safeFileName")
-        runCatching {
-            contentResolver.openInputStream(uri)?.use { input ->
-                FileOutputStream(destFile).use { output ->
-                    input.copyTo(output)
+            if (displayName.isBlank()) {
+                displayName = uri.lastPathSegment?.substringAfterLast('/')?.substringAfterLast(':') ?: "Document_${System.currentTimeMillis() % 10000}"
+            }
+
+            // Ensure extension is present using ContentResolver MIME type if missing
+            val mimeType = runCatching { contentResolver.getType(uri) }.getOrNull() ?: ""
+            val resolvedExt = resolveExtensionFromNameOrMime(displayName, mimeType)
+            if (!displayName.contains('.')) {
+                displayName = "$displayName.$resolvedExt"
+            }
+
+            val safeFileName = displayName.replace(Regex("[^a-zA-Z0-9._\\- ]"), "_")
+            val libDir = File(context.filesDir, "library").apply { mkdirs() }
+            val destFile = File(libDir, "${System.currentTimeMillis() % 100000}_$safeFileName")
+            runCatching {
+                contentResolver.openInputStream(uri)?.use { input ->
+                    FileOutputStream(destFile).use { output ->
+                        input.copyTo(output, bufferSize = 32 * 1024)
+                    }
                 }
             }
-        }
-        if (!destFile.exists() || destFile.length() == 0L) return null
+            if (!destFile.exists() || destFile.length() == 0L) return null
 
-        val session = MultiFormatDocumentEngine.openSession(context, destFile)
-        val format = DocumentFormat.fromFilename(displayName)
-        val newDoc = DocumentEntity(
-            displayName = displayName,
-            filePath = destFile.absolutePath,
-            uriString = uri.toString(),
-            formatName = format.name,
-            sizeBytes = destFile.length(),
-            pageCount = session.pageCount.coerceAtLeast(1),
-            folderId = folderId,
-            indexedContent = session.pagesText.take(10).joinToString(" ").take(2500)
-        )
-        val id = repository.upsertDocument(newDoc)
-        return newDoc.copy(id = id)
+            val format = DocumentFormat.fromFilename(destFile.name)
+            val inspection = MultiFormatDocumentEngine.quickInspectDocument(context, destFile, format)
+            val newDoc = DocumentEntity(
+                displayName = displayName,
+                filePath = destFile.absolutePath,
+                uriString = uri.toString(),
+                formatName = format.name,
+                sizeBytes = destFile.length(),
+                pageCount = inspection.pageCount.coerceAtLeast(1),
+                folderId = folderId,
+                indexedContent = inspection.previewSnippet.take(1500)
+            )
+            val id = repository.upsertDocument(newDoc)
+            newDoc.copy(id = id)
+        } catch (_: Throwable) {
+            null
+        }
+    }
+
+    private fun resolveExtensionFromNameOrMime(name: String, mimeType: String): String {
+        val extFromName = name.substringAfterLast('.', "").lowercase()
+        if (extFromName.isNotBlank() && extFromName.length <= 5) return extFromName
+        val m = mimeType.lowercase()
+        return when {
+            m.contains("pdf") -> "pdf"
+            m.contains("epub") -> "epub"
+            m.contains("wordprocessingml") || m.contains("msword") -> "docx"
+            m.contains("spreadsheetml") || m.contains("excel") -> "xlsx"
+            m.contains("presentationml") || m.contains("powerpoint") -> "pptx"
+            m.contains("opendocument") -> "odt"
+            m.contains("markdown") -> "md"
+            m.contains("csv") -> "csv"
+            m.contains("html") -> "html"
+            m.contains("rtf") -> "rtf"
+            m.startsWith("text/") -> "txt"
+            m.contains("png") -> "png"
+            m.contains("webp") -> "webp"
+            m.startsWith("image/") -> "jpg"
+            else -> {
+                android.webkit.MimeTypeMap.getSingleton().getExtensionFromMimeType(mimeType)?.lowercase() ?: "pdf"
+            }
+        }
     }
 
     fun exportFileToSafUri(sourcePath: String, targetUri: Uri) {
@@ -765,15 +877,15 @@ class FolioViewModel(application: Application) : AndroidViewModel(application) {
                 val outFile = File(execResult.primaryOutputPath)
                 if (outFile.exists()) {
                     val format = DocumentFormat.fromFilename(outFile.name)
-                    val session = MultiFormatDocumentEngine.openSession(getApplication(), outFile)
+                    val inspection = MultiFormatDocumentEngine.quickInspectDocument(getApplication(), outFile, format)
                     repository.upsertDocument(
                         DocumentEntity(
                             displayName = outFile.name,
                             filePath = outFile.absolutePath,
                             formatName = format.name,
                             sizeBytes = outFile.length(),
-                            pageCount = session.pageCount,
-                            indexedContent = session.pagesText.take(8).joinToString(" ").take(2000)
+                            pageCount = inspection.pageCount.coerceAtLeast(execResult.pagesProcessed.coerceAtLeast(1)),
+                            indexedContent = inspection.previewSnippet.take(1500)
                         )
                     )
                 }

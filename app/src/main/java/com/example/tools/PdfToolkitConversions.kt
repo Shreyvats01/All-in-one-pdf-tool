@@ -2,13 +2,13 @@ package com.example.tools
 
 import android.content.Context
 import android.graphics.Bitmap
-import android.graphics.BitmapFactory
 import android.graphics.Color
 import com.example.domain.model.PdfToolId
 import com.example.domain.model.ToolConfiguration
 import com.example.domain.model.ToolExecutionResult
 import com.example.reader.MultiFormatDocumentEngine
 import com.tom_roush.pdfbox.cos.COSName
+import com.tom_roush.pdfbox.io.MemoryUsageSetting
 import com.tom_roush.pdfbox.pdmodel.PDDocument
 import com.tom_roush.pdfbox.pdmodel.PDPage
 import com.tom_roush.pdfbox.pdmodel.PDPageContentStream
@@ -28,6 +28,28 @@ import java.util.zip.ZipOutputStream
 
 object PdfToolkitConversions {
 
+    /**
+     * Sanitizes any string before passing to PDFBox PDType1Font.showText()
+     * so non-WinAnsi characters (bullets, em-dashes, non-ASCII Unicode) never throw IllegalArgumentException.
+     */
+    fun sanitizePdfText(input: String): String {
+        if (input.isEmpty()) return ""
+        val sb = StringBuilder(input.length)
+        for (ch in input) {
+            when (ch) {
+                '\u2022', '\u00B7', '\u25CF' -> sb.append('-')
+                '\u2014', '\u2013' -> sb.append("--")
+                '\u2018', '\u2019' -> sb.append('\'')
+                '\u201C', '\u201D' -> sb.append('"')
+                '\u2026' -> sb.append("...")
+                '\r', '\n', '\t' -> sb.append(' ')
+                in '\u0020'..'\u007E' -> sb.append(ch)
+                else -> sb.append(' ')
+            }
+        }
+        return sb.toString()
+    }
+
     suspend fun imagesToPdf(
         context: Context,
         inputFiles: List<File>,
@@ -43,7 +65,7 @@ object PdfToolkitConversions {
             inputFiles.forEachIndexed { idx, file ->
                 ensureActive()
                 onProgress(((idx + 1) * 90) / inputFiles.size.coerceAtLeast(1), "Adding image ${idx + 1} of ${inputFiles.size}...")
-                val bmp = BitmapFactory.decodeFile(file.absolutePath)
+                val bmp = MultiFormatDocumentEngine.decodeSampledBitmapFromFile(file, maxDimensionPx = 1600)
                     ?: MultiFormatDocumentEngine.renderPageBitmap(file, com.example.domain.model.DocumentFormat.fromFilename(file.name), 0, file.name, 1080)
 
                 val baseRect = when (config.imagePageSize) {
@@ -59,10 +81,10 @@ object PdfToolkitConversions {
                 val page = PDPage(pageRect)
                 outDoc.addPage(page)
 
-                val pdImage = JPEGFactory.createFromImage(outDoc, bmp, (config.imageQuality / 100f).coerceIn(0.4f, 0.98f))
+                val pdImage = JPEGFactory.createFromImage(outDoc, bmp, (config.imageQuality / 100f).coerceIn(0.4f, 0.95f))
                 val availW = (pageRect.width - marginPt * 2).coerceAtLeast(100f)
                 val availH = (pageRect.height - marginPt * 2).coerceAtLeast(100f)
-                val scale = minOf(availW / bmp.width.toFloat(), availH / bmp.height.toFloat())
+                val scale = minOf(availW / bmp.width.toFloat().coerceAtLeast(1f), availH / bmp.height.toFloat().coerceAtLeast(1f))
                 val drawW = bmp.width * scale
                 val drawH = bmp.height * scale
                 val drawX = (pageRect.width - drawW) / 2f
@@ -124,10 +146,10 @@ object PdfToolkitConversions {
                 val pdImg = JPEGFactory.createFromImage(outDoc, bmp, 0.85f)
                 PDPageContentStream(outDoc, page).use { cs ->
                     cs.drawImage(pdImg, 0f, 0f, PDRectangle.A4.width, PDRectangle.A4.height)
-                    // Embed invisible searchable text layer over the page
+                    // Embed searchable text layer over the page
                     var y = 760f
                     ocrLayerText.lines().take(35).forEach { line ->
-                        val safe = line.replace(Regex("[^\\x20-\\x7E]"), " ").take(85)
+                        val safe = sanitizePdfText(line).take(85)
                         if (safe.isNotBlank()) {
                             cs.beginText()
                             cs.setFont(PDType1Font.HELVETICA, 10f)
@@ -156,7 +178,6 @@ object PdfToolkitConversions {
     }
 
     private fun performOfflineBitmapTextRecognition(bitmap: Bitmap, pageNum: Int, lang: String): String {
-        // Analyze horizontal text line density bands in the bitmap + generate searchable OCR text layer
         var darkPixels = 0
         val step = 8
         for (y in 0 until bitmap.height step step) {
@@ -167,7 +188,7 @@ object PdfToolkitConversions {
             }
         }
         val densityPercent = (darkPixels * 100) / ((bitmap.width / step) * (bitmap.height / step)).coerceAtLeast(1)
-        return "Offline OCR Recognized Text Layer (Lang: $lang, Page $pageNum, Text Density: $densityPercent%) — Searchable Document Content"
+        return "Offline OCR Recognized Text Layer (Lang: $lang, Page $pageNum, Text Density: $densityPercent%) - Searchable Document Content"
     }
 
     suspend fun convertAnyToPdf(
@@ -186,24 +207,25 @@ object PdfToolkitConversions {
                 ensureActive()
                 onProgress(((idx + 1) * 85) / inputFiles.size.coerceAtLeast(1), "Converting ${file.name} to PDF...")
                 val session = MultiFormatDocumentEngine.openSession(context, file)
-                session.pagesText.forEachIndexed { pIdx, pageText ->
+                val pagesToRender = session.pagesText.ifEmpty { listOf(file.name) }
+                pagesToRender.forEachIndexed { pIdx, pageText ->
                     val page = PDPage(PDRectangle.A4)
                     outDoc.addPage(page)
                     totalPages++
                     PDPageContentStream(outDoc, page).use { cs ->
                         cs.beginText()
-                        cs.setNonStrokingColor(79, 91, 213)
+                        cs.setNonStrokingColor(37, 99, 235)
                         cs.setFont(PDType1Font.HELVETICA_BOLD, 11f)
                         cs.newLineAtOffset(48f, 785f)
-                        cs.showText("${file.name}  •  Page ${pIdx + 1}")
+                        cs.showText(sanitizePdfText("${file.name}  -  Page ${pIdx + 1}").take(85))
                         cs.endText()
 
                         var y = 750f
                         val fontSize = config.fontSizePt.coerceIn(9f, 18f)
                         pageText.lines().flatMap { it.chunked(78) }.take(34).forEach { line ->
-                            val clean = line.replace(Regex("[^\\x20-\\x7E]"), " ")
+                            val clean = sanitizePdfText(line)
                             cs.beginText()
-                            cs.setNonStrokingColor(24, 24, 27)
+                            cs.setNonStrokingColor(15, 23, 42)
                             cs.setFont(PDType1Font.HELVETICA, fontSize)
                             cs.newLineAtOffset(48f, y)
                             cs.showText(clean)
@@ -240,7 +262,7 @@ object PdfToolkitConversions {
         val selected = PdfToolkitEngine.parsePageIndices(config.pageRangeSpec, session.pageCount).sorted()
         val widthPx = when (config.exportDpi) {
             72 -> 595
-            300 -> 2480
+            300 -> 1600
             else -> 1240 // 150 DPI
         }
         val isPng = config.exportImageFormat.equals("PNG", ignoreCase = true)
@@ -369,29 +391,32 @@ object PdfToolkitConversions {
         onProgress: (Int, String) -> Unit
     ): ToolExecutionResult = withContext(Dispatchers.IO) {
         val extractedFiles = mutableListOf<File>()
-        PDDocument.load(sourceFile).use { doc ->
-            val total = doc.numberOfPages.coerceAtLeast(1)
-            for (i in 0 until total) {
-                ensureActive()
-                onProgress(((i + 1) * 85) / total, "Scanning page ${i + 1} for embedded XObject images...")
-                val page = doc.getPage(i)
-                val resources = page.resources
-                resources?.xObjectNames?.forEach { name: COSName ->
-                    val xObj = resources.getXObject(name)
-                    if (xObj is PDImageXObject) {
-                        val bmp = xObj.image
-                        if (bmp != null) {
-                            val imgFile = File(outDir, "${sourceFile.nameWithoutExtension}_img_${extractedFiles.size + 1}.jpg")
-                            FileOutputStream(imgFile).use { out ->
-                                bmp.compress(Bitmap.CompressFormat.JPEG, 92, out)
+        runCatching {
+            PDDocument.load(sourceFile, MemoryUsageSetting.setupTempFileOnly()).use { doc ->
+                val total = doc.numberOfPages.coerceAtLeast(1)
+                for (i in 0 until total) {
+                    ensureActive()
+                    onProgress(((i + 1) * 85) / total, "Scanning page ${i + 1} for embedded XObject images...")
+                    val page = doc.getPage(i)
+                    val resources = page.resources
+                    resources?.xObjectNames?.forEach { name: COSName ->
+                        runCatching {
+                            val xObj = resources.getXObject(name)
+                            if (xObj is PDImageXObject) {
+                                val bmp = xObj.image
+                                if (bmp != null) {
+                                    val imgFile = File(outDir, "${sourceFile.nameWithoutExtension}_img_${extractedFiles.size + 1}.jpg")
+                                    FileOutputStream(imgFile).use { out ->
+                                        bmp.compress(Bitmap.CompressFormat.JPEG, 92, out)
+                                    }
+                                    extractedFiles.add(imgFile)
+                                }
                             }
-                            extractedFiles.add(imgFile)
                         }
                     }
                 }
             }
         }
-        // If vector-only PDF, extract page visual snapshots so user always gets usable image assets
         if (extractedFiles.isEmpty()) {
             val bmp = MultiFormatDocumentEngine.renderPageBitmap(
                 sourceFile,
@@ -419,17 +444,17 @@ object PdfToolkitConversions {
 
     private fun extractPagesText(file: File): List<String> {
         return try {
-            PDDocument.load(file).use { doc ->
+            PDDocument.load(file, MemoryUsageSetting.setupTempFileOnly()).use { doc ->
                 val stripper = PDFTextStripper()
-                (1..doc.numberOfPages.coerceAtLeast(1)).map { pageNum ->
+                (1..doc.numberOfPages.coerceAtLeast(1).coerceAtMost(80)).map { pageNum ->
                     stripper.startPage = pageNum
                     stripper.endPage = pageNum
                     runCatching { stripper.getText(doc).trim() }.getOrDefault("")
-                        .ifBlank { "Page $pageNum (Scanned Content — Offline OCR Ready)" }
+                        .ifBlank { "Page $pageNum (Scanned Content - Offline OCR Ready)" }
                 }
             }
-        } catch (_: Exception) {
-            listOf(file.readText())
+        } catch (_: Throwable) {
+            listOf(runCatching { file.readText().take(32000) }.getOrDefault(file.name))
         }
     }
 
@@ -476,7 +501,7 @@ object PdfToolkitConversions {
                 zip.putNextEntry(ZipEntry("ppt/slides/slide${idx + 1}.xml"))
                 val runs = pageText.lines().filter { it.isNotBlank() }.joinToString("") { line ->
                     val escaped = line.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-                    "<a:p><a:r><a:t>$escaped</a:t></a:r></a:p>"
+                    "<a:p><a:r><a:t>$escaped</a:t></w:r></a:p>"
                 }
                 zip.write("<p:sld xmlns:p=\"http://schemas.openxmlformats.org/presentationml/2006/main\" xmlns:a=\"http://schemas.openxmlformats.org/drawingml/2006/main\">$runs</p:sld>".toByteArray())
                 zip.closeEntry()

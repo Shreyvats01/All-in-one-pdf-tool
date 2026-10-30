@@ -112,13 +112,13 @@ object PdfToolkitEngine {
                 PdfToolId.COMPARE_PDF -> comparePdfs(normalizedInputs, outDir, outputPattern, onProgress)
                 PdfToolId.BATCH_PROCESSOR -> runBatchProcessor(context, normalizedInputs, outDir, config, outputPattern, onProgress)
             }
-        } catch (e: Exception) {
-            val isPassword = e.message?.contains("password", ignoreCase = true) == true ||
-                e.message?.contains("decrypt", ignoreCase = true) == true
+        } catch (t: Throwable) {
+            val isPassword = t.message?.contains("password", ignoreCase = true) == true ||
+                t.message?.contains("decrypt", ignoreCase = true) == true
             val plainError = if (isPassword) {
                 "This PDF is password-protected. Enter the password in Unlock PDF or the password field to continue."
             } else {
-                "Could not process ${firstFile.name}: ${e.localizedMessage ?: "Malformed document structure"}."
+                "Could not process ${firstFile.name}: ${t.localizedMessage ?: "Malformed document structure"}."
             }
             ToolExecutionResult(
                 success = false,
@@ -513,13 +513,13 @@ object PdfToolkitEngine {
                 cs.beginText()
                 cs.setFont(PDType1Font.HELVETICA_BOLD, 14f)
                 cs.newLineAtOffset(48f, 770f)
-                cs.showText("Recovered PDF Content Stream — ${sourceFile.name}")
+                cs.showText(PdfToolkitConversions.sanitizePdfText("Recovered PDF Content Stream - ${sourceFile.name}"))
                 cs.endText()
 
                 cs.beginText()
                 cs.setFont(PDType1Font.HELVETICA, 10f)
                 cs.newLineAtOffset(48f, 735f)
-                cs.showText(rawText.take(90).replace("\n", " "))
+                cs.showText(PdfToolkitConversions.sanitizePdfText(rawText.take(90)))
                 cs.endText()
             }
             outDoc.save(outFile)
@@ -593,7 +593,7 @@ object PdfToolkitEngine {
                             cs.setNonStrokingColor(25, 33, 108)
                             cs.setFont(PDType1Font.HELVETICA_BOLD, 14f)
                             cs.newLineAtOffset(box.width - 196f, box.height - 79f)
-                            cs.showText(stampLabel.take(20))
+                            cs.showText(PdfToolkitConversions.sanitizePdfText(stampLabel).take(20))
                             cs.endText()
                         }
                         PdfToolId.FORM_FILL -> {
@@ -606,7 +606,7 @@ object PdfToolkitEngine {
                                 cs.setNonStrokingColor(24, 24, 27)
                                 cs.setFont(PDType1Font.HELVETICA_BOLD, 11f)
                                 cs.newLineAtOffset(56f, yOffset)
-                                cs.showText("$fieldKey: $fieldVal")
+                                cs.showText(PdfToolkitConversions.sanitizePdfText("$fieldKey: $fieldVal"))
                                 cs.endText()
                                 yOffset += 30f
                             }
@@ -620,7 +620,7 @@ object PdfToolkitEngine {
                             cs.setNonStrokingColor(24, 24, 27)
                             cs.setFont(PDType1Font.HELVETICA, config.fontSizePt.coerceIn(9f, 24f))
                             cs.newLineAtOffset(56f, 110f)
-                            cs.showText(added.take(85))
+                            cs.showText(PdfToolkitConversions.sanitizePdfText(added).take(85))
                             cs.endText()
                         }
                         else -> {
@@ -634,7 +634,7 @@ object PdfToolkitEngine {
                                 cs.setNonStrokingColor(25, 33, 108)
                                 cs.setFont(PDType1Font.HELVETICA_BOLD, 10f)
                                 cs.newLineAtOffset(54f, yPos)
-                                cs.showText("[${annot.typeName}] ${annot.textContent.ifBlank { "Markup annotation" }}")
+                                cs.showText(PdfToolkitConversions.sanitizePdfText("[${annot.typeName}] ${annot.textContent.ifBlank { "Markup annotation" }}"))
                                 cs.endText()
                             }
                         }
@@ -751,7 +751,7 @@ object PdfToolkitEngine {
         val outFile = buildOutputFile(outDir, sourceFile.name, "watermarked", "pdf", pattern)
         PDDocument.load(sourceFile).use { doc ->
             val selected = parsePageIndices(config.pageRangeSpec, doc.numberOfPages)
-            val text = config.watermarkText.ifBlank { "CONFIDENTIAL" }
+            val text = PdfToolkitConversions.sanitizePdfText(config.watermarkText.ifBlank { "CONFIDENTIAL" }).ifBlank { "CONFIDENTIAL" }
             selected.forEachIndexed { idx, pIdx ->
                 val page = doc.getPage(pIdx)
                 val box = page.mediaBox ?: PDRectangle.A4
@@ -810,14 +810,18 @@ object PdfToolkitEngine {
             for (i in 0 until total) {
                 val page = doc.getPage(i)
                 val box = page.mediaBox ?: PDRectangle.A4
-                val resolvedHeader = config.headerText
-                    .replace("{date}", dateStr)
-                    .replace("{filename}", sourceFile.name)
-                    .replace("{page}", "${i + 1}")
-                val resolvedFooter = config.footerText
-                    .replace("{date}", dateStr)
-                    .replace("{filename}", sourceFile.name)
-                    .replace("{page}", "${i + 1}")
+                val resolvedHeader = PdfToolkitConversions.sanitizePdfText(
+                    config.headerText
+                        .replace("{date}", dateStr)
+                        .replace("{filename}", sourceFile.name)
+                        .replace("{page}", "${i + 1}")
+                )
+                val resolvedFooter = PdfToolkitConversions.sanitizePdfText(
+                    config.footerText
+                        .replace("{date}", dateStr)
+                        .replace("{filename}", sourceFile.name)
+                        .replace("{page}", "${i + 1}")
+                )
                 PDPageContentStream(doc, page, PDPageContentStream.AppendMode.APPEND, true, true).use { cs ->
                     cs.setNonStrokingColor(90, 93, 101)
                     cs.setFont(PDType1Font.HELVETICA, 10f)
@@ -1100,7 +1104,7 @@ object PdfToolkitEngine {
                             cs.setNonStrokingColor(40, 45, 90)
                             cs.setFont(PDType1Font.HELVETICA, 10f)
                             cs.newLineAtOffset(48f, (110f + idx * 18f))
-                            cs.showText("Flattened [${a.typeName}]: ${a.textContent}")
+                            cs.showText(PdfToolkitConversions.sanitizePdfText("Flattened [${a.typeName}]: ${a.textContent}"))
                             cs.endText()
                         }
                     }
@@ -1193,7 +1197,7 @@ object PdfToolkitEngine {
         onProgress: (Int, String) -> Unit
     ): ToolExecutionResult = withContext(Dispatchers.IO) {
         val outFile = buildOutputFile(outDir, sourceFile.name, "signed", "pdf", pattern)
-        val signer = config.signatureText.ifBlank { "Authorized Signatory" }
+        val signer = PdfToolkitConversions.sanitizePdfText(config.signatureText.ifBlank { "Authorized Signatory" }).ifBlank { "Authorized Signatory" }
         val dateStamp = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.US).format(Date())
         val certDigest = VaultCryptoManager.generatePkcs12SignatureDigest(sourceFile, signer)
 
@@ -1219,7 +1223,7 @@ object PdfToolkitEngine {
                 cs.setNonStrokingColor(24, 24, 27)
                 cs.setFont(PDType1Font.HELVETICA_BOLD, 12f)
                 cs.newLineAtOffset(60f, 98f)
-                cs.showText("Signed: $signer")
+                cs.showText(PdfToolkitConversions.sanitizePdfText("Signed: $signer"))
                 cs.endText()
 
                 if (config.includeDateStamp) {
@@ -1261,7 +1265,6 @@ object PdfToolkitEngine {
         pattern: String,
         onProgress: (Int, String) -> Unit
     ): ToolExecutionResult = withContext(Dispatchers.IO) {
-        // True structural redaction: strips matching text tokens from page text AND rebuilds clean pages so redacted strings do not exist in the output PDF stream
         val session = MultiFormatDocumentEngine.openSession(context, sourceFile)
         val terms = config.redactSearchTerms.split(",").map { it.trim() }.filter { it.isNotEmpty() }
         val outDoc = PDDocument()
@@ -1286,12 +1289,12 @@ object PdfToolkitEngine {
                     cs.setNonStrokingColor(24, 24, 27)
                     cs.setFont(PDType1Font.HELVETICA_BOLD, 12f)
                     cs.newLineAtOffset(48f, 780f)
-                    cs.showText("VERIFIED REDACTED COPY — Page ${idx + 1}")
+                    cs.showText("VERIFIED REDACTED COPY - Page ${idx + 1}")
                     cs.endText()
 
                     var y = 740f
                     sanitized.lines().take(32).forEach { line ->
-                        val safeLine = line.replace(Regex("[^\\x20-\\x7E]"), " ").take(82)
+                        val safeLine = PdfToolkitConversions.sanitizePdfText(line).take(82)
                         if (safeLine.contains("[REDACTED]")) {
                             cs.setNonStrokingColor(24, 24, 27)
                             cs.addRect(48f, y - 3f, 480f, 15f)
@@ -1361,13 +1364,13 @@ object PdfToolkitEngine {
             cs.setNonStrokingColor(24, 24, 27)
             cs.setFont(PDType1Font.HELVETICA, 11f)
             cs.newLineAtOffset(48f, 745f)
-            cs.showText("Base Document A: ${fileA.name}   |   Compared Document B: ${fileB.name}")
+            cs.showText(PdfToolkitConversions.sanitizePdfText("Base Document A: ${fileA.name}   |   Compared Document B: ${fileB.name}"))
             cs.endText()
 
             cs.beginText()
             cs.setFont(PDType1Font.HELVETICA_BOLD, 12f)
             cs.newLineAtOffset(48f, 715f)
-            cs.showText("Summary: +${addedLines.size} Added Lines  •  -${removedLines.size} Removed Lines  •  $unchangedCount Unchanged")
+            cs.showText("Summary: +${addedLines.size} Added Lines  |  -${removedLines.size} Removed Lines  |  $unchangedCount Unchanged")
             cs.endText()
 
             var y = 675f
@@ -1379,7 +1382,7 @@ object PdfToolkitEngine {
                 cs.setNonStrokingColor(153, 27, 27)
                 cs.setFont(PDType1Font.HELVETICA, 9.5f)
                 cs.newLineAtOffset(54f, y)
-                cs.showText("- ${rem.replace(Regex("[^\\x20-\\x7E]"), " ").take(80)}")
+                cs.showText("- ${PdfToolkitConversions.sanitizePdfText(rem).take(80)}")
                 cs.endText()
                 y -= 24f
             }
@@ -1391,7 +1394,7 @@ object PdfToolkitEngine {
                 cs.setNonStrokingColor(25, 33, 108)
                 cs.setFont(PDType1Font.HELVETICA, 9.5f)
                 cs.newLineAtOffset(54f, y)
-                cs.showText("+ ${add.replace(Regex("[^\\x20-\\x7E]"), " ").take(80)}")
+                cs.showText("+ ${PdfToolkitConversions.sanitizePdfText(add).take(80)}")
                 cs.endText()
                 y -= 24f
             }

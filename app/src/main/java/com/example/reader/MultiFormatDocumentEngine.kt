@@ -25,6 +25,7 @@ import android.util.LruCache
 import androidx.core.content.FileProvider
 import com.example.core.SampleSeedGenerator
 import com.example.domain.model.DocumentFormat
+import com.tom_roush.pdfbox.io.MemoryUsageSetting
 import com.tom_roush.pdfbox.pdmodel.PDDocument
 import com.tom_roush.pdfbox.pdmodel.interactive.documentnavigation.outline.PDOutlineItem
 import com.tom_roush.pdfbox.pdmodel.interactive.documentnavigation.outline.PDOutlineNode
@@ -60,10 +61,63 @@ data class ParsedDocumentSession(
     val errorPlainMessage: String? = null
 )
 
+data class QuickDocumentInspection(
+    val pageCount: Int,
+    val previewSnippet: String
+)
+
 object MultiFormatDocumentEngine {
 
-    private val bitmapCache: LruCache<String, Bitmap> = object : LruCache<String, Bitmap>(32 * 1024) {
+    private val bitmapCache: LruCache<String, Bitmap> = object : LruCache<String, Bitmap>(28 * 1024) {
         override fun sizeOf(key: String, value: Bitmap): Int = value.byteCount / 1024
+    }
+
+    /**
+     * Lightweight, zero-OOM document inspection used during file import.
+     * Uses Android's native C++ PdfRenderer for instant page count without loading the entire PDF into Java heap.
+     */
+    suspend fun quickInspectDocument(
+        context: Context,
+        file: File,
+        format: DocumentFormat
+    ): QuickDocumentInspection = withContext(Dispatchers.IO) {
+        if (!file.exists() || file.length() <= 0L) {
+            return@withContext QuickDocumentInspection(1, file.name)
+        }
+        try {
+            when (format) {
+                DocumentFormat.PDF -> {
+                    var pages = 1
+                    runCatching {
+                        ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY).use { pfd ->
+                            PdfRenderer(pfd).use { renderer ->
+                                pages = renderer.pageCount.coerceAtLeast(1)
+                            }
+                        }
+                    }.onFailure {
+                        // Fallback to temp-file backed PDDocument if native PdfRenderer fails
+                        runCatching {
+                            SampleSeedGenerator.ensurePdfBoxInitialized(context)
+                            PDDocument.load(file, MemoryUsageSetting.setupTempFileOnly()).use { doc ->
+                                pages = doc.numberOfPages.coerceAtLeast(1)
+                            }
+                        }
+                    }
+                    QuickDocumentInspection(pageCount = pages, previewSnippet = file.name)
+                }
+                DocumentFormat.IMAGE -> QuickDocumentInspection(pageCount = 1, previewSnippet = "Image ${file.name}")
+                else -> {
+                    val snippet = readBoundedUtf8Text(file, maxBytes = 16 * 1024)
+                    val estimatedPages = (file.length() / 2200L).toInt().coerceIn(1, 500)
+                    QuickDocumentInspection(
+                        pageCount = estimatedPages,
+                        previewSnippet = snippet.take(1200).ifBlank { file.name }
+                    )
+                }
+            }
+        } catch (_: Throwable) {
+            QuickDocumentInspection(1, file.name)
+        }
     }
 
     suspend fun openSession(
@@ -104,20 +158,33 @@ object MultiFormatDocumentEngine {
                 )
                 else -> openPlainOrMarkupSession(file, format)
             }
-        } catch (e: Exception) {
-            val msg = e.message?.lowercase() ?: ""
+        } catch (t: Throwable) {
+            val msg = t.message?.lowercase() ?: ""
             val isPasswordError = msg.contains("password") || msg.contains("decrypt") || msg.contains("encrypted")
+            // Even if PDFBox text extraction fails or OOMs on an enormous PDF, try native PdfRenderer for page count so visual rendering still works!
+            val fallbackPageCount = runCatching {
+                if (format == DocumentFormat.PDF) {
+                    ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY).use { pfd ->
+                        PdfRenderer(pfd).use { it.pageCount.coerceAtLeast(1) }
+                    }
+                } else 1
+            }.getOrDefault(1)
+
             ParsedDocumentSession(
                 file = file,
                 format = format,
-                pageCount = 1,
-                pagesText = emptyList(),
+                pageCount = fallbackPageCount,
+                pagesText = List(fallbackPageCount.coerceAtMost(50)) {
+                    "[Page ${it + 1} — Visual page ready]"
+                },
                 outline = emptyList(),
                 formFields = emptyList(),
                 isPasswordProtected = isPasswordError,
-                isCorrupted = !isPasswordError,
+                isCorrupted = !isPasswordError && fallbackPageCount <= 1,
                 errorPlainMessage = if (isPasswordError) {
                     "This PDF is password-protected. Enter the password to continue."
+                } else if (fallbackPageCount > 1) {
+                    null
                 } else {
                     "This file appears damaged or encrypted. Run Repair PDF or Unlock PDF to recover it."
                 }
@@ -126,54 +193,58 @@ object MultiFormatDocumentEngine {
     }
 
     private fun openPdfSession(file: File, password: String): ParsedDocumentSession {
+        val memSetting = MemoryUsageSetting.setupTempFileOnly()
         val doc = if (password.isNotEmpty()) {
-            PDDocument.load(file, password)
+            PDDocument.load(file, password, memSetting)
         } else {
-            PDDocument.load(file)
+            PDDocument.load(file, memSetting)
         }
         doc.use { pdDoc ->
             val totalPages = pdDoc.numberOfPages.coerceAtLeast(1)
             val stripper = PDFTextStripper()
-            val pagesText = ArrayList<String>(totalPages)
-            // Extract text per page (cap initial synchronous extraction to first 80 pages for cold-start speed on 1000+ page docs)
-            val extractLimit = totalPages.coerceAtMost(80)
+            val pagesText = ArrayList<String>(totalPages.coerceAtMost(120))
+            // Cap initial synchronous text extraction to 25 pages for fast, low-memory startup
+            val extractLimit = totalPages.coerceAtMost(25)
             for (i in 1..extractLimit) {
                 stripper.startPage = i
                 stripper.endPage = i
                 val pageStr = runCatching { stripper.getText(pdDoc).trim() }.getOrDefault("")
                 pagesText.add(pageStr.ifEmpty { "[Page $i — Scanned or visual page. Run Offline OCR to make text selectable.]" })
             }
-            for (i in (extractLimit + 1)..totalPages) {
+            for (i in (extractLimit + 1)..totalPages.coerceAtMost(200)) {
                 pagesText.add("[Page $i — Loaded on demand]")
             }
 
-            // Extract outline / ToC
+            // Extract outline / ToC safely
             val outlineList = mutableListOf<OutlineEntry>()
-            val rootOutline = pdDoc.documentCatalog?.documentOutline
-            if (rootOutline != null) {
-                collectOutline(rootOutline, pdDoc, 0, outlineList)
+            runCatching {
+                val rootOutline = pdDoc.documentCatalog?.documentOutline
+                if (rootOutline != null) {
+                    collectOutline(rootOutline, pdDoc, 0, outlineList)
+                }
             }
             if (outlineList.isEmpty()) {
-                for (i in 0 until totalPages) {
+                for (i in 0 until totalPages.coerceAtMost(100)) {
                     val firstLine = pagesText.getOrNull(i)?.lineSequence()?.firstOrNull { it.isNotBlank() }?.take(48) ?: "Page ${i + 1}"
                     outlineList.add(OutlineEntry(firstLine, i, 0))
                 }
             }
 
-            // Detect fillable AcroForm fields + structured form lines
+            // Detect fillable AcroForm fields + structured form lines safely
             val formFields = mutableListOf<FormFieldEntry>()
-            val acroForm = pdDoc.documentCatalog?.acroForm
-            acroForm?.fields?.forEach { field ->
-                formFields.add(
-                    FormFieldEntry(
-                        name = field.fullyQualifiedName ?: "Field",
-                        value = field.valueAsString ?: "",
-                        fieldType = field.fieldType ?: "TEXT"
+            runCatching {
+                val acroForm = pdDoc.documentCatalog?.acroForm
+                acroForm?.fields?.forEach { field ->
+                    formFields.add(
+                        FormFieldEntry(
+                            name = field.fullyQualifiedName ?: "Field",
+                            value = field.valueAsString ?: "",
+                            fieldType = field.fieldType ?: "TEXT"
+                        )
                     )
-                )
+                }
             }
-            // Also detect inline "Form Field [Name]: Value" lines so user can test form filling on any document
-            pagesText.forEach { text ->
+            pagesText.take(25).forEach { text ->
                 val regex = Regex("""Form Field \[([^\]]+)]:\s*(.*)""")
                 regex.findAll(text).forEach { match ->
                     formFields.add(
@@ -203,8 +274,9 @@ object MultiFormatDocumentEngine {
         level: Int,
         out: MutableList<OutlineEntry>
     ) {
+        if (level > 4 || out.size > 150) return
         var current: PDOutlineItem? = node.firstChild
-        while (current != null) {
+        while (current != null && out.size <= 150) {
             val page = runCatching { current.findDestinationPage(doc) }.getOrNull()
             val pageIdx = if (page != null) doc.pages.indexOf(page).coerceAtLeast(0) else 0
             out.add(OutlineEntry(current.title ?: "Section", pageIdx, level))
@@ -218,9 +290,9 @@ object MultiFormatDocumentEngine {
         val outline = mutableListOf<OutlineEntry>()
         ZipInputStream(FileInputStream(file)).use { zip ->
             var entry = zip.nextEntry
-            while (entry != null) {
+            while (entry != null && chapters.size < 80) {
                 if (!entry.isDirectory && (entry.name.endsWith(".xhtml") || entry.name.endsWith(".html") || entry.name.endsWith(".htm"))) {
-                    val rawHtml = zip.readBytes().toString(Charsets.UTF_8)
+                    val rawHtml = readBoundedStreamText(zip, 64 * 1024)
                     val title = Regex("<title>(.*?)</title>", RegexOption.IGNORE_CASE).find(rawHtml)?.groupValues?.get(1)
                         ?: Regex("<h1[^>]*>(.*?)</h1>", RegexOption.IGNORE_CASE).find(rawHtml)?.groupValues?.get(1)
                         ?: "Chapter ${chapters.size + 1}"
@@ -246,24 +318,30 @@ object MultiFormatDocumentEngine {
 
     private fun openZipXmlTextSession(file: File, format: DocumentFormat): ParsedDocumentSession {
         val paragraphs = mutableListOf<String>()
-        ZipInputStream(FileInputStream(file)).use { zip ->
-            var entry = zip.nextEntry
-            while (entry != null) {
-                if (!entry.isDirectory && entry.name.endsWith(".xml") || entry.name.endsWith(".fpage")) {
-                    val xml = zip.readBytes().toString(Charsets.UTF_8)
-                    val extracted = xml
-                        .replace(Regex("</w:p>|</text:p>"), "\n\n")
-                        .replace(Regex("<[^>]+>"), " ")
-                        .replace(Regex("[ \\t]+"), " ")
-                        .trim()
-                    if (extracted.isNotBlank() && (entry.name.contains("document") || entry.name.contains("content") || entry.name.contains("Pages"))) {
-                        paragraphs.add(extracted)
+        runCatching {
+            ZipInputStream(FileInputStream(file)).use { zip ->
+                var entry = zip.nextEntry
+                while (entry != null && paragraphs.size < 60) {
+                    if (!entry.isDirectory && (entry.name.endsWith(".xml") || entry.name.endsWith(".fpage"))) {
+                        val xml = readBoundedStreamText(zip, 96 * 1024)
+                        val extracted = xml
+                            .replace(Regex("</w:p>|</text:p>"), "\n\n")
+                            .replace(Regex("<[^>]+>"), " ")
+                            .replace(Regex("[ \\t]+"), " ")
+                            .trim()
+                        if (extracted.isNotBlank() && (entry.name.contains("document") || entry.name.contains("content") || entry.name.contains("Pages"))) {
+                            paragraphs.add(extracted)
+                        }
                     }
+                    entry = zip.nextEntry
                 }
-                entry = zip.nextEntry
             }
         }
-        val combined = if (paragraphs.isNotEmpty()) paragraphs.joinToString("\n\n") else stripHtmlTags(file.readText())
+        val combined = if (paragraphs.isNotEmpty()) {
+            paragraphs.joinToString("\n\n")
+        } else {
+            stripHtmlTags(readBoundedUtf8Text(file, 128 * 1024))
+        }
         val pages = paginateText(combined, 1400)
         return ParsedDocumentSession(
             file = file,
@@ -278,23 +356,25 @@ object MultiFormatDocumentEngine {
     private fun openXlsxSession(file: File): ParsedDocumentSession {
         val sharedStrings = mutableListOf<String>()
         val sheets = mutableListOf<String>()
-        ZipInputStream(FileInputStream(file)).use { zip ->
-            var entry = zip.nextEntry
-            while (entry != null) {
-                val content = zip.readBytes().toString(Charsets.UTF_8)
-                if (entry.name.endsWith("sharedStrings.xml")) {
-                    Regex("<t[^>]*>(.*?)</t>").findAll(content).forEach {
-                        sharedStrings.add(it.groupValues[1])
+        runCatching {
+            ZipInputStream(FileInputStream(file)).use { zip ->
+                var entry = zip.nextEntry
+                while (entry != null && sheets.size < 30) {
+                    val content = readBoundedStreamText(zip, 96 * 1024)
+                    if (entry.name.endsWith("sharedStrings.xml")) {
+                        Regex("<t[^>]*>(.*?)</t>").findAll(content).take(200).forEach {
+                            sharedStrings.add(it.groupValues[1])
+                        }
+                    } else if (entry.name.contains("worksheets/sheet")) {
+                        val values = Regex("<v>(.*?)</v>").findAll(content).take(250).map { it.groupValues[1] }.toList()
+                        sheets.add("Spreadsheet Grid (${entry.name.substringAfterLast('/')}):\n\n" + values.joinToString("  |  "))
                     }
-                } else if (entry.name.contains("worksheets/sheet")) {
-                    val values = Regex("<v>(.*?)</v>").findAll(content).map { it.groupValues[1] }.toList()
-                    sheets.add("Spreadsheet Grid (${entry.name.substringAfterLast('/')}):\n\n" + values.joinToString("  |  "))
+                    entry = zip.nextEntry
                 }
-                entry = zip.nextEntry
             }
         }
         val pages = if (sheets.isNotEmpty()) {
-            val sharedHeader = if (sharedStrings.isNotEmpty()) "Shared Labels:\n" + sharedStrings.joinToString(" • ") + "\n\n" else ""
+            val sharedHeader = if (sharedStrings.isNotEmpty()) "Shared Labels:\n" + sharedStrings.joinToString(" - ") + "\n\n" else ""
             sheets.map { sharedHeader + it }
         } else {
             listOf("Spreadsheet: ${file.name}")
@@ -311,15 +391,17 @@ object MultiFormatDocumentEngine {
 
     private fun openPptxSession(file: File): ParsedDocumentSession {
         val slides = mutableListOf<String>()
-        ZipInputStream(FileInputStream(file)).use { zip ->
-            var entry = zip.nextEntry
-            while (entry != null) {
-                if (entry.name.startsWith("ppt/slides/slide") && entry.name.endsWith(".xml")) {
-                    val xml = zip.readBytes().toString(Charsets.UTF_8)
-                    val texts = Regex("<a:t>(.*?)</a:t>").findAll(xml).map { it.groupValues[1] }.toList()
-                    slides.add("Slide ${slides.size + 1}\n\n" + texts.joinToString("\n• "))
+        runCatching {
+            ZipInputStream(FileInputStream(file)).use { zip ->
+                var entry = zip.nextEntry
+                while (entry != null && slides.size < 60) {
+                    if (entry.name.startsWith("ppt/slides/slide") && entry.name.endsWith(".xml")) {
+                        val xml = readBoundedStreamText(zip, 64 * 1024)
+                        val texts = Regex("<a:t>(.*?)</a:t>").findAll(xml).map { it.groupValues[1] }.toList()
+                        slides.add("Slide ${slides.size + 1}\n\n" + texts.joinToString("\n- "))
+                    }
+                    entry = zip.nextEntry
                 }
-                entry = zip.nextEntry
             }
         }
         if (slides.isEmpty()) slides.add("Presentation: ${file.name}")
@@ -335,15 +417,17 @@ object MultiFormatDocumentEngine {
 
     private fun openComicArchiveSession(file: File, format: DocumentFormat): ParsedDocumentSession {
         var imageCount = 0
-        ZipInputStream(FileInputStream(file)).use { zip ->
-            var entry = zip.nextEntry
-            while (entry != null) {
-                if (!entry.isDirectory && entry.name.lowercase().let {
-                        it.endsWith(".jpg") || it.endsWith(".jpeg") || it.endsWith(".png") || it.endsWith(".webp")
-                    }) {
-                    imageCount++
+        runCatching {
+            ZipInputStream(FileInputStream(file)).use { zip ->
+                var entry = zip.nextEntry
+                while (entry != null) {
+                    if (!entry.isDirectory && entry.name.lowercase().let {
+                            it.endsWith(".jpg") || it.endsWith(".jpeg") || it.endsWith(".png") || it.endsWith(".webp")
+                        }) {
+                        imageCount++
+                    }
+                    entry = zip.nextEntry
                 }
-                entry = zip.nextEntry
             }
         }
         val count = imageCount.coerceAtLeast(1)
@@ -358,7 +442,7 @@ object MultiFormatDocumentEngine {
     }
 
     private fun openPlainOrMarkupSession(file: File, format: DocumentFormat): ParsedDocumentSession {
-        val raw = file.readText(Charsets.UTF_8)
+        val raw = readBoundedUtf8Text(file, 128 * 1024)
         val processed = when (format) {
             DocumentFormat.HTML -> stripHtmlTags(raw)
             DocumentFormat.RTF -> raw.replace(Regex("""\\[a-z]+\d*\s?|[{}]"""), "").trim()
@@ -381,6 +465,27 @@ object MultiFormatDocumentEngine {
         )
     }
 
+    private fun readBoundedUtf8Text(file: File, maxBytes: Int): String {
+        return runCatching {
+            FileInputStream(file).use { input ->
+                readBoundedStreamText(input, maxBytes)
+            }
+        }.getOrDefault("")
+    }
+
+    private fun readBoundedStreamText(input: java.io.InputStream, maxBytes: Int): String {
+        return runCatching {
+            val buffer = ByteArray(maxBytes.coerceIn(1024, 256 * 1024))
+            var totalRead = 0
+            while (totalRead < buffer.size) {
+                val read = input.read(buffer, totalRead, buffer.size - totalRead)
+                if (read <= 0) break
+                totalRead += read
+            }
+            if (totalRead <= 0) "" else String(buffer, 0, totalRead, Charsets.UTF_8)
+        }.getOrDefault("")
+    }
+
     private fun stripHtmlTags(input: String): String {
         return input
             .replace(Regex("<style[^>]*>[\\s\\S]*?</style>", RegexOption.IGNORE_CASE), "")
@@ -398,7 +503,7 @@ object MultiFormatDocumentEngine {
         if (text.isBlank()) return listOf("(Empty Document)")
         val pages = mutableListOf<String>()
         var index = 0
-        while (index < text.length) {
+        while (index < text.length && pages.size < 120) {
             val end = (index + charsPerPage).coerceAtMost(text.length)
             pages.add(text.substring(index, end))
             index = end
@@ -413,18 +518,22 @@ object MultiFormatDocumentEngine {
         pageText: String,
         targetWidthPx: Int = 1080
     ): Bitmap = withContext(Dispatchers.IO) {
-        val safeWidth = targetWidthPx.coerceIn(360, 2560)
+        val safeWidth = targetWidthPx.coerceIn(240, 1600)
         val cacheKey = "${file.absolutePath}:${file.lastModified()}:$pageIndex:$safeWidth"
         bitmapCache.get(cacheKey)?.let { cached ->
             if (!cached.isRecycled) return@withContext cached
         }
 
-        val rendered = when (format) {
-            DocumentFormat.PDF -> renderNativePdfPage(file, pageIndex, safeWidth)
-            DocumentFormat.IMAGE -> renderRasterImageFile(file, safeWidth)
-            else -> renderTextDocumentPage(file.name, pageIndex, pageText, safeWidth)
+        val rendered = try {
+            when (format) {
+                DocumentFormat.PDF -> renderNativePdfPage(file, pageIndex, safeWidth)
+                DocumentFormat.IMAGE -> renderRasterImageFile(file, safeWidth)
+                else -> renderTextDocumentPage(file.name, pageIndex, pageText, safeWidth)
+            }
+        } catch (_: Throwable) {
+            renderTextDocumentPage(file.name, pageIndex, pageText.ifBlank { file.name }, safeWidth.coerceAtMost(720))
         }
-        bitmapCache.put(cacheKey, rendered)
+        runCatching { bitmapCache.put(cacheKey, rendered) }
         rendered
     }
 
@@ -435,8 +544,8 @@ object MultiFormatDocumentEngine {
                     val safeIndex = pageIndex.coerceIn(0, (renderer.pageCount - 1).coerceAtLeast(0))
                     renderer.openPage(safeIndex).use { page ->
                         val aspect = page.height.toFloat() / page.width.toFloat().coerceAtLeast(1f)
-                        val width = targetWidthPx
-                        val height = (width * aspect).toInt().coerceAtLeast(400)
+                        val width = targetWidthPx.coerceIn(240, 1600)
+                        val height = (width * aspect).toInt().coerceIn(300, 2200)
                         val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
                         val canvas = Canvas(bitmap)
                         canvas.drawColor(Color.WHITE)
@@ -445,17 +554,44 @@ object MultiFormatDocumentEngine {
                     }
                 }
             }
-        } catch (_: Exception) {
-            renderTextDocumentPage(file.name, pageIndex, "Unable to render native PDF page ${pageIndex + 1}", targetWidthPx)
+        } catch (_: Throwable) {
+            renderTextDocumentPage(file.name, pageIndex, "PDF Page ${pageIndex + 1} (${file.name})", targetWidthPx)
+        }
+    }
+
+    fun decodeSampledBitmapFromFile(file: File, maxDimensionPx: Int = 1440): Bitmap? {
+        return try {
+            val boundsOpts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            BitmapFactory.decodeFile(file.absolutePath, boundsOpts)
+            val srcW = boundsOpts.outWidth
+            val srcH = boundsOpts.outHeight
+            if (srcW <= 0 || srcH <= 0) return null
+
+            var sampleSize = 1
+            while ((srcW / sampleSize) > maxDimensionPx || (srcH / sampleSize) > maxDimensionPx) {
+                sampleSize *= 2
+            }
+            val decodeOpts = BitmapFactory.Options().apply {
+                inSampleSize = sampleSize
+                inPreferredConfig = Bitmap.Config.ARGB_8888
+            }
+            BitmapFactory.decodeFile(file.absolutePath, decodeOpts)
+        } catch (_: Throwable) {
+            null
         }
     }
 
     private fun renderRasterImageFile(file: File, targetWidthPx: Int): Bitmap {
-        val decoded = BitmapFactory.decodeFile(file.absolutePath)
+        val decoded = decodeSampledBitmapFromFile(file, targetWidthPx.coerceIn(360, 1440))
         if (decoded != null) {
             val aspect = decoded.height.toFloat() / decoded.width.toFloat().coerceAtLeast(1f)
-            val height = (targetWidthPx * aspect).toInt().coerceIn(300, 3200)
-            return Bitmap.createScaledBitmap(decoded, targetWidthPx, height, true)
+            val width = targetWidthPx.coerceIn(240, 1440)
+            val height = (width * aspect).toInt().coerceIn(240, 2048)
+            return if (decoded.width == width && decoded.height == height) {
+                decoded
+            } else {
+                Bitmap.createScaledBitmap(decoded, width, height, true)
+            }
         }
         return renderTextDocumentPage(file.name, 0, "Image Preview: ${file.name}", targetWidthPx)
     }
@@ -466,38 +602,40 @@ object MultiFormatDocumentEngine {
         pageText: String,
         targetWidthPx: Int
     ): Bitmap {
-        val height = (targetWidthPx * 1.414f).toInt()
-        val bitmap = Bitmap.createBitmap(targetWidthPx, height, Bitmap.Config.ARGB_8888)
+        val safeW = targetWidthPx.coerceIn(240, 1440)
+        val height = (safeW * 1.414f).toInt().coerceIn(320, 2048)
+        val bitmap = Bitmap.createBitmap(safeW, height, Bitmap.Config.ARGB_8888)
         val canvas = Canvas(bitmap)
-        canvas.drawColor(Color.parseColor("#FAF8F5"))
+        canvas.drawColor(Color.parseColor("#FFFFFF"))
 
         val headerPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = Color.parseColor("#4F5BD5")
-            textSize = targetWidthPx * 0.024f
+            color = Color.parseColor("#2563EB")
+            textSize = safeW * 0.025f
             isFakeBoldText = true
         }
-        val margin = targetWidthPx * 0.07f
+        val margin = safeW * 0.07f
         canvas.drawText("$title  •  Page ${pageIndex + 1}", margin, margin, headerPaint)
 
         val dividerPaint = Paint().apply {
-            color = Color.parseColor("#DEDAD2")
+            color = Color.parseColor("#E2E8F0")
             strokeWidth = 2f
         }
-        canvas.drawLine(margin, margin + 20f, targetWidthPx - margin, margin + 20f, dividerPaint)
+        canvas.drawLine(margin, margin + 18f, safeW - margin, margin + 18f, dividerPaint)
 
         val textPaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = Color.parseColor("#18181B")
-            textSize = targetWidthPx * 0.031f
+            color = Color.parseColor("#0F172A")
+            textSize = safeW * 0.031f
         }
-        val contentWidth = (targetWidthPx - margin * 2).toInt().coerceAtLeast(200)
+        val contentWidth = (safeW - margin * 2).toInt().coerceAtLeast(160)
+        val safeSlice = pageText.take(2200)
         val staticLayout = StaticLayout.Builder
-            .obtain(pageText, 0, pageText.length, textPaint, contentWidth)
+            .obtain(safeSlice, 0, safeSlice.length, textPaint, contentWidth)
             .setAlignment(Layout.Alignment.ALIGN_NORMAL)
-            .setLineSpacing(6f, 1.35f)
+            .setLineSpacing(5f, 1.32f)
             .build()
 
         canvas.save()
-        canvas.translate(margin, margin + 64f)
+        canvas.translate(margin, margin + 56f)
         staticLayout.draw(canvas)
         canvas.restore()
         return bitmap
@@ -505,14 +643,16 @@ object MultiFormatDocumentEngine {
 
     fun shareDocumentOffline(context: Context, file: File) {
         if (!file.exists()) return
-        val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
-        val format = DocumentFormat.fromFilename(file.name)
-        val shareIntent = Intent(Intent.ACTION_SEND).apply {
-            type = format.mimeType
-            putExtra(Intent.EXTRA_STREAM, uri)
-            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        runCatching {
+            val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
+            val format = DocumentFormat.fromFilename(file.name)
+            val shareIntent = Intent(Intent.ACTION_SEND).apply {
+                type = format.mimeType
+                putExtra(Intent.EXTRA_STREAM, uri)
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+            context.startActivity(Intent.createChooser(shareIntent, "Share ${file.name}"))
         }
-        context.startActivity(Intent.createChooser(shareIntent, "Share ${file.name}"))
     }
 
     fun printDocumentOffline(context: Context, session: ParsedDocumentSession) {
@@ -571,8 +711,8 @@ object MultiFormatDocumentEngine {
                             pdfDoc.close()
                         }
                         callback?.onWriteFinished(arrayOf(PageRange.ALL_PAGES))
-                    } catch (e: Exception) {
-                        callback?.onWriteFailed(e.message)
+                    } catch (t: Throwable) {
+                        callback?.onWriteFailed(t.message ?: "Print error")
                     }
                 }
             },
